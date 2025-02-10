@@ -21,6 +21,7 @@
 #include <executorch/extension/llm/sampler/sampler.h>
 #include <executorch/extension/llm/tokenizer/tokenizer.h>
 #include <executorch/extension/module/module.h>
+#include <executorch/devtools/etdump/etdump_flatcc.h>
 
 namespace example {
 
@@ -97,6 +98,7 @@ class Runner {
   Stats stats_;
   std::unique_ptr<Memory> io_mem_;
   int32_t eval_mode_;
+  std::shared_ptr<executorch::etdump::ETDumpGen> etdump_gen_;
 };
 
 } // namespace example

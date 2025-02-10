@@ -79,6 +79,8 @@ Runner::Runner(
   io_mem_ = std::make_unique<HybridMemory>(
       modules_, max_seq_len_, vocab_size_, num_layers, head_dim, num_heads);
   ET_LOG(Info, "creating io_memory");
+
+  etdump_gen_ = std::make_shared<executorch::etdump::ETDumpGen>();
 }
 
 bool Runner::is_loaded() const {
@@ -94,7 +96,7 @@ Error Runner::load() {
     return Error::Ok;
   }
   for (std::shared_ptr<Module>& module : modules_) {
-    ET_CHECK_OK_OR_RETURN_ERROR(module->load_method("forward"));
+    ET_CHECK_OK_OR_RETURN_ERROR(module->load_method("forward", etdump_gen_.get()));
   }
 
   // create sampler
@@ -287,6 +289,17 @@ Error Runner::generate(
   printReport(stats_);
   if (stats_callback) {
     stats_callback(stats_);
+  }
+
+  // Dump the etdump data containing profiling/debugging data to file specified
+  torch::executor::etdump_result result = etdump_gen_->get_etdump_data();
+  if (result.buf != nullptr && result.size > 0) {
+      // On a device with a file system users can just write it out
+      // to the file-system.
+      FILE* f = fopen("etdump.etdp", "w+");
+      fwrite((uint8_t*)result.buf, 1, result.size, f);
+      fclose(f);
+      free(result.buf);
   }
 
   return Error::Ok;
