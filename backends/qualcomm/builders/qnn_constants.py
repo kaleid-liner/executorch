@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import IntEnum, unique
 
 QNN_OP_PACKAGE_NAME_QTI_AISW = "qti.aisw"
+QNN_OP_PACKAGE_NAME_TMAN = "TMANOpPackage"
 
 # Below constants should be same as those in QNN headers.
 # Maybe someday we should expose these constants by pybind
@@ -469,3 +470,11 @@ class OpTransposeConv2d:
     param_pad_amount: str = "pad_amount"
     param_group: str = "group"
     param_output_padding: str = "output_padding"
+
+
+@dataclass(init=False, frozen=True)
+class OpTMANLinear:
+    op_name: str = "TMANLinear"
+    param_group_size: str = "group_size"
+    param_bits: str = "bits"
+    param_symmetric: str = "symmetric"

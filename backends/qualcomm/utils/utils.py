@@ -11,6 +11,8 @@ import warnings
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import numpy as np
+
 import executorch.backends.qualcomm.python.PyQnnManagerAdaptor as PyQnnManagerAdaptor
 
 import executorch.exir as exir
@@ -45,6 +47,9 @@ from executorch.backends.qualcomm.builders.node_visitor import (
     QNN_TENSOR_TYPE_MAP,
 )
 from executorch.backends.qualcomm.builders.qnn_constants import OpContextLoader
+from executorch.backends.qualcomm.builders.custom_ops import (
+    tman_linear,
+)
 from executorch.backends.qualcomm.partition.qnn_partitioner import (
     generate_qnn_executorch_option,
     QnnPartitioner,
@@ -167,6 +172,193 @@ def qnn_edge_config() -> exir.EdgeCompileConfig:
     return exir.EdgeCompileConfig(
         _check_ir_validity=False,
     )
+
+
+def parse_gptqv2(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> Tuple:
+    bits = 32 // (scales.shape[1] // qzeros.shape[1])
+    K = qweight.shape[0] * (32 // bits)
+    M = qweight.shape[1]
+    group_size = K // scales.shape[0]
+
+    return K, M, bits, group_size
+
+
+def unpack_gptqv2(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray, gptq_v2: bool = True):
+    """
+    Unpack GPTQv2
+    Return T-MAC biased uint8 weight [0, 2 ** bits), fp16 scales, biased fp16 zeros, bits, group_size
+    """
+    assert qweight.dtype == "int32"
+    assert qzeros.dtype == "int32"
+
+    K, M, bits, group_size = parse_gptqv2(qweight, scales, qzeros)
+
+    # Unpack qweight
+    qweights = [(qweight >> bit_offset) & ((1 << bits) - 1) for bit_offset in range(0, 32, bits)]
+    w = np.stack(qweights, axis=1).reshape(K, M).T.astype("uint8")
+
+    scales = scales.T
+
+    # Unpack qzeros
+    zeros = [(qzeros >> bit_offset) & ((1 << bits) - 1) for bit_offset in range(0, 32, bits)]
+    zeros = np.stack(zeros, axis=-1).reshape(K // group_size, M).T.astype(scales.dtype)
+    if not gptq_v2:
+        # `zeros = zeros - 1` in AutoGPTQ
+        # Not in GPTQModel
+        zeros += 1
+    zeros = (zeros - (2 ** (bits - 1))) * scales
+
+    return w, scales, zeros, bits, group_size
+
+
+def hvx_preprocess_weights_gptq(
+    w: np.ndarray,
+    scales: np.ndarray,
+    zeros: Optional[np.ndarray] = None,
+    bits: int = 4,
+    g: int = 4,
+    tile_p: int = 512,
+    tile_q: int = 64,
+    vec_p: int = 128,
+    vec_q: int = 4,
+    vec_c: int = 32,
+) -> Tuple[np.ndarray, np.ndarray]:
+
+    assert(w.dtype == "uint8")
+    assert(scales.dtype == "float16")
+    # 4 = sizeof(int32/float) / sizeof(uint8)
+    assert(vec_p // 4 == vec_c)
+
+    if zeros is not None:
+        if zeros.dtype == scales.dtype:
+            zeros = zeros / scales
+        else:
+            assert(zeros.dtype == "int8")
+
+    M, K = w.shape
+
+    P = M * bits
+    Q = K // g
+
+    # (M, K, bits)
+    w = np.stack([(w >> ib) & 1 for ib in range(bits)], axis=-1)
+    # (M, K, bits) -> (M, bits, K) -> (M, bits, K) -> (M, bits, K // g, g)
+    w = w.transpose(0, 2, 1).reshape(M, bits, Q, g)
+    # (M, bits, K // g, g) -> (M, bits, Q)
+    w = sum([(w[:, :, :, ig] << ig) for ig in range(g)])
+    # (M, bits, Q) -> (M // vec_p, vec_p, bits, Q) -> (M // vec_p, bits, vec_p, Q) -> (P // vec_p, vec_p, Q)
+    w = w.reshape(M // vec_p, vec_p, bits, Q).transpose(0, 2, 1, 3)
+    # Interleave even and odd vec_c of w_vec
+    # 0, 1 -> even bytes of w_vec -> c_vec_0, c_vec_2 -> c_bitsum_lo
+    # 2, 3 ->  odd bytes of w_vec -> c_vec_1, c_vec_3 -> c_bitsum_hi
+    # w_vec = w0/w2/w0/w2......w1/w3/w1/w3
+    # c_vec_0, c_vec_2 = w0/w0......w1/w1
+    # c_vec_1, c_vec_3 = w2/w2......w3/w3
+    w = w.reshape(P // vec_p, 2, 2, vec_c, Q).transpose(0, 2, 3, 1, 4)
+    w = w.reshape(P // tile_p, tile_p, Q // tile_q, tile_q).transpose(0, 2, 1, 3)
+    #             0            1            2                3      4                5
+    w = w.reshape(P // tile_p, Q // tile_q, tile_p // vec_p, vec_p, tile_q // vec_q, vec_q).transpose(0, 1, 2, 4, 5, 3)
+    # Pack and interleave: q = 0 -> w_vec_lo_bo, q = 1 -> w_vec_lo_to, q = 2 -> w_vec_hi_bo, q = 3 -> w_vec_hi_to
+    # lo -> low 128 bytes, hi -> high 128 bytes, bo -> bot 4 bit in a byte, to -> top 4 bit in a byte
+    w = w.reshape(-1, vec_q, vec_p).reshape(-1, vec_q // 2, 2, vec_p).transpose(0, 1, 3, 2)
+    w = sum([(w[:, :, :, n] << (n * g)) for n in range(2)])
+    w = w.reshape(P // tile_p, Q // tile_q, tile_p // vec_p, tile_q // vec_q, vec_q // 2, vec_p)
+    # Reshape for easy shape inference
+    w = np.ascontiguousarray(w).view(np.int32).reshape(M, -1)
+
+    if scales.size >= M:
+        group_size = K // scales.shape[1]
+        q_group_size = group_size // g
+        scales = scales.reshape(P // tile_p, tile_p // bits, Q // tile_q, tile_q // q_group_size).transpose(0, 2, 1, 3)
+        #                       0            1            2                        3      4
+        scales = scales.reshape(P // tile_p, Q // tile_q, tile_p // bits // vec_p, vec_p, tile_q // q_group_size).transpose(0, 1, 2, 4, 3)
+        # s_vec = s0/s0......s1/s1......s2/s2......s3/s3
+        # s_vec_lo_lo, s_vec_lo_hi = s0/s0......s1/s1 -> c_vec_0, c_vec_2 -> c_bitsum_lo
+        # no need for interleaving
+        if zeros is not None:
+            zeros = zeros.reshape(P // tile_p, tile_p // bits, Q // tile_q, tile_q // q_group_size).transpose(0, 2, 1, 3)
+            zeros = zeros.reshape(P // tile_p, Q // tile_q, tile_p // bits // vec_p, vec_p, tile_q // q_group_size).transpose(0, 1, 2, 4, 3)
+            # (c * ls + lb) * s + z * s * lb * 2
+            # = (c * ls + lb + z * lb * 2) * s
+            # = (c * ls + (z * 2 + 1) * lb) * s
+            zeros = zeros * 2 + 1
+            scales = np.stack([scales, zeros], axis=-2)
+        scales = scales.view(np.int32).reshape(1, -1)
+    else:
+        # TODO: support BitNet and rename the function
+        if zeros is not None:
+            scales = np.concatenate([scales, zeros])
+    return w, scales
+
+
+def convert_qlinear_to_tman_linear(module: torch.nn.Module):
+    class TMANLinear(torch.nn.Module):
+        def __init__(self, qweight: torch.Tensor, qzeros: torch.Tensor, scales: torch.Tensor, gptq_v2: bool = True):
+            super().__init__()
+            # TODO: found a way to decide if symmetric or not
+            # Assume symmetric=False for now
+            self.symmetric = False
+            # GPTQv1: AutoGPTQ
+            # GPTQv2: GPTQModel
+            self.gptq_v2 = gptq_v2
+
+            w, scales, zeros, bits, group_size = unpack_gptqv2(qweight.numpy(), scales.numpy(), qzeros.numpy(), gptq_v2)
+            w, scales = hvx_preprocess_weights_gptq(w, scales, zeros, bits)
+
+            self.qweight = torch.nn.Parameter(torch.from_numpy(qweight))
+            self.scales = torch.nn.Parameter(torch.from_numpy(scales))
+
+            self.group_size = group_size
+            self.bits = bits
+
+        def forward(self, x):
+            return tman_linear(x, self.qweight, self.scales, self.group_size, self.bits, self.symmetric)
+
+    def replace_qlinear(module: torch.nn.Module):
+        attr_strs = dir(module)
+        if isinstance(module, torch.nn.ModuleList):
+            attr_strs += [str(i) for i in range(len(module))]
+
+        for attr_str in attr_strs:
+            target_attr = getattr(module, attr_str)
+            # TODO: decide is_qlinear and is_gptq_v2 more wisely by introducing QuantLinear in llama_transformer.py
+            is_qlinear = (
+                hasattr(target_attr, "qweight")
+                and hasattr(target_attr, "qzeros")
+                and hasattr(target_attr, "scales")
+                and hasattr(target_attr, "QUANT_TYPE")
+            )
+            if is_qlinear:
+                gptq_v2 = hasattr(target_attr, "SUPPORTS_BITS")
+                setattr(module, attr_str, TMANLinear(target_attr.qweight, target_attr.qzeros, target_attr.scales, gptq_v2))
+
+        for _, sub_module in module.named_children():
+            sub_module = replace_qlinear(sub_module)
+        return module
+
+    # Test dummy models
+    def replace_linear(module: torch.nn.Module):
+        attr_strs = dir(module)
+        if isinstance(module, torch.nn.ModuleList):
+            attr_strs += [str(i) for i in range(len(module))]
+
+        for attr_str in attr_strs:
+            target_attr = getattr(module, attr_str)
+            if isinstance(target_attr, torch.nn.Linear):
+                gptq_v2 = True
+                test_bits = 2
+                test_group_size = 64
+                qweight = torch.from_numpy(np.empty((target_attr.in_features // 32 * test_bits, target_attr.out_features), dtype=np.int32))
+                qzeros = torch.from_numpy(np.empty((target_attr.in_features // test_group_size, target_attr.out_features // 32 * test_bits), dtype=np.int32))
+                scales = torch.from_numpy(np.empty((target_attr.in_features // test_group_size, target_attr.out_features), dtype=np.float16))
+                setattr(module, attr_str, TMANLinear(qweight, qzeros, scales, gptq_v2))
+
+        for _, sub_module in module.named_children():
+            sub_module = replace_linear(sub_module)
+        return module
+
+    # return replace_qlinear(module)
+    return replace_linear(module)
 
 
 def convert_linear_to_conv2d(module: torch.nn.Module):

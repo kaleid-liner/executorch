@@ -1136,3 +1136,11 @@ def annotate_where(node: Node, quantization_config: QuantizationConfig) -> None:
 
     _annotate_output_qspec(node, quantization_config.output_activation)
     _mark_nodes_as_annotated([node])
+
+
+@register_annotator([torch.ops.tman.linear.default])
+def annotate_tman_linear(node: Node, quantization_config: QuantizationConfig) -> None:
+    if _is_annotated([node]):
+        return
+    # We can use single_in_single_out since we don't want to quantize qweight and scales input
+    annotate_single_in_single_out(node, quantization_config)

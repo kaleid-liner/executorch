@@ -1156,6 +1156,7 @@ def _get_source_transforms(  # noqa
         if args.qnn:
             from executorch.backends.qualcomm.utils.utils import (
                 convert_linear_to_conv2d,
+                convert_qlinear_to_tman_linear,
             )
 
             if args.use_qnn_sha:
@@ -1181,6 +1182,7 @@ def _get_source_transforms(  # noqa
                     )
                 # pyre-fixme[16]: Module `backends` has no attribute `qualcomm`.
                 transforms.append(convert_linear_to_conv2d)
+            transforms.append(convert_qlinear_to_tman_linear)
 
         elif args.mps:
             # Currently mps doesn't support sdpa op, use the simpler decomposition

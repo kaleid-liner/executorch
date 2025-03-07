@@ -54,6 +54,26 @@ Error QnnBackend::Configure() {
         QNN_GET_ERROR_CODE(error));
     return Error::Internal;
   }
+
+  // Expose API to options in QnnManager later
+  const char* package_path = "libQnnTMANOpPackage.so";
+  const char* interface_provider = "TMANOpPackageInterfaceProvider";
+  const char* target = "HTP";
+  error = qnn_interface.qnn_backend_register_op_package(
+      handle_,
+      package_path,
+      interface_provider,
+      target);
+  if (error != QNN_SUCCESS) {
+    QNN_EXECUTORCH_LOG_ERROR(
+        "Failed to register "
+        "op package %s for Backend "
+        "ID %u, error=%d",
+        package_path,
+        qnn_interface.GetBackendId(),
+        QNN_GET_ERROR_CODE(error));
+    return Error::Internal;
+  }
   return Error::Ok;
 }
 
