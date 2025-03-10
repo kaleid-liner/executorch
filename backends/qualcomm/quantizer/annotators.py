@@ -1138,9 +1138,13 @@ def annotate_where(node: Node, quantization_config: QuantizationConfig) -> None:
     _mark_nodes_as_annotated([node])
 
 
-@register_annotator([torch.ops.tman.linear.default])
-def annotate_tman_linear(node: Node, quantization_config: QuantizationConfig) -> None:
-    if _is_annotated([node]):
-        return
-    # We can use single_in_single_out since we don't want to quantize qweight and scales input
-    annotate_single_in_single_out(node, quantization_config)
+try:
+    from executorch.backends.qualcomm.builders.custom_ops import tman_linear
+    @register_annotator([torch.ops.tman.linear.default])
+    def annotate_tman_linear(node: Node, quantization_config: QuantizationConfig) -> None:
+        if _is_annotated([node]):
+            return
+        # We can use single_in_single_out since we don't want to quantize qweight and scales input
+        annotate_single_in_single_out(node, quantization_config)
+except ImportError:
+    pass

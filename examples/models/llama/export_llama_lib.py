@@ -1169,7 +1169,7 @@ def _get_source_transforms(  # noqa
                 transforms.append(replace_causal_mask)
                 transforms.append(replace_rms_norm_with_native_rms_norm)
                 # pyre-fixme[16]: Module `backends` has no attribute `qualcomm`.
-                transforms.append(convert_linear_to_conv2d)
+                # transforms.append(convert_linear_to_conv2d)
             else:
                 transforms.append(replace_kv_cache_with_simple_kv_cache)
                 transforms.append(replace_sdpa_with_flex_sdpa)
@@ -1181,7 +1181,7 @@ def _get_source_transforms(  # noqa
                         get_model_with_r1_r2(args.optimized_rotation_path)
                     )
                 # pyre-fixme[16]: Module `backends` has no attribute `qualcomm`.
-                transforms.append(convert_linear_to_conv2d)
+                # transforms.append(convert_linear_to_conv2d)
             transforms.append(convert_qlinear_to_tman_linear)
 
         elif args.mps:

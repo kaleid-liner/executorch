@@ -44,6 +44,7 @@ from executorch.backends.qualcomm.utils.constants import (
 from executorch.backends.qualcomm.utils.utils import (
     capture_program,
     convert_linear_to_conv2d,
+    convert_qlinear_to_tman_linear,
     generate_composite_llama_program,
     generate_htp_compiler_spec,
     generate_multi_graph_program,
@@ -552,8 +553,8 @@ def compile(args, pte_filename, tokenizer):
         for layer in llama_instance.layers:
             if getattr(layer.attention, "prepare_sha", None):
                 layer.attention.prepare_sha()
-            if getattr(layer.feed_forward, "prepare_feedfoward_conv", None):
-                layer.feed_forward.prepare_feedfoward_conv()
+            # if getattr(layer.feed_forward, "prepare_feedfoward_conv", None):
+            #     layer.feed_forward.prepare_feedfoward_conv()
 
     use_fp16 = True
     fixed_point_type = {"kv_type": torch.float32, "io_type": torch.float32}
@@ -589,7 +590,9 @@ def compile(args, pte_filename, tokenizer):
             passes_job[ConstantI64toI32][QCOM_PASS_ARGS_KWARGS_DEFAULTS_KEY][
                 "skip_node"
             ] = {"tokens"}
-        llama_instance_list[i] = convert_linear_to_conv2d(llama_instance_list[i])
+        # llama_instance_list[i] = convert_linear_to_conv2d(llama_instance_list[i])
+        llama_instance_list[i] = convert_qlinear_to_tman_linear(llama_instance_list[i])
+        print(llama_instance_list[i])
         llama_instance_list[i] = SingleLlama(
             llama_instance_list[i].eval(), pte_filename
         )

@@ -116,7 +116,7 @@ class TMANLinear(NodeVisitor):
             dtype=PyQnnWrapper.Qnn_DataType_t.QNN_DATATYPE_INT_32,
             quant_encoding=no_quant_encoding,
             quant_configs=no_quant_configs,
-            dims=torch.Size(1, _get_scratch_size(m, k, group_size, bits)),
+            dims=torch.Size((1, _get_scratch_size(m, k, group_size, bits))),
             tensor=None,  # Unused when is_fake_tensor is True
             is_fake_tensor=True,
             nodes_to_wrappers=nodes_to_wrappers,
