@@ -206,7 +206,7 @@ def unpack_gptqv2(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray, g
         # `zeros = zeros - 1` in AutoGPTQ
         # Not in GPTQModel
         zeros += 1
-    zeros = (zeros - (2 ** (bits - 1))) * scales
+    zeros = (zeros - (2 ** (bits - 1)))
 
     return w, scales, zeros, bits, group_size
 
@@ -228,12 +228,6 @@ def hvx_preprocess_weights_gptq(
     assert(scales.dtype == "float16")
     # 4 = sizeof(int32/float) / sizeof(uint8)
     assert(vec_p // 4 == vec_c)
-
-    if zeros is not None:
-        if zeros.dtype == scales.dtype:
-            zeros = zeros / scales
-        else:
-            assert(zeros.dtype == "int8")
 
     M, K = w.shape
 
@@ -293,26 +287,42 @@ def hvx_preprocess_weights_gptq(
 
 def convert_qlinear_to_tman_linear(module: torch.nn.Module):
     class TMANLinear(torch.nn.Module):
-        def __init__(self, qweight: torch.Tensor, qzeros: torch.Tensor, scales: torch.Tensor, gptq_v2: bool = True):
+        def __init__(self, linear: torch.nn.Module):
             super().__init__()
             # TODO: found a way to decide if symmetric or not
             # Assume symmetric=False for now
             self.symmetric = False
             # GPTQv1: AutoGPTQ
             # GPTQv2: GPTQModel
-            self.gptq_v2 = gptq_v2
+            # self.gptq_v2 = hasattr(linear, "SUPPORTS_BITS")
+            # qweight, qzeros, scales = linear.qweight, linear.qzeros, linear.scales
+            gptq_v2 = True
+            test_bits = 2
+            test_group_size = 64
+            self.in_features = linear.in_features
+            self.out_features = linear.out_features
+            qweight = torch.from_numpy(np.zeros((self.in_features // 32 * test_bits, self.out_features), dtype=np.int32))
+            qzeros = torch.from_numpy(np.zeros((self.in_features // test_group_size, self.out_features // 32 * test_bits), dtype=np.int32))
+            scales = torch.from_numpy(np.zeros((self.in_features // test_group_size, self.out_features), dtype=np.float16))
 
             w, scales, zeros, bits, group_size = unpack_gptqv2(qweight.numpy(), scales.numpy(), qzeros.numpy(), gptq_v2)
             w, scales = hvx_preprocess_weights_gptq(w, scales, zeros, bits)
 
-            self.qweight = torch.nn.Parameter(torch.from_numpy(qweight))
-            self.scales = torch.nn.Parameter(torch.from_numpy(scales))
+            self.qweight = torch.nn.Parameter(torch.from_numpy(w), requires_grad=False)
+            self.scales = torch.nn.Parameter(torch.from_numpy(scales), requires_grad=False)
 
             self.group_size = group_size
             self.bits = bits
 
         def forward(self, x):
             return tman_linear(x, self.qweight, self.scales, self.group_size, self.bits, self.symmetric)
+
+        def extra_repr(self):
+            s = (
+                "{in_features}, {out_features}, group_size={group_size}, bits={bits}"
+                ", symmetric={symmetric}"
+            )
+            return s.format(**self.__dict__)
 
     def replace_qlinear(module: torch.nn.Module):
         attr_strs = dir(module)
@@ -329,8 +339,7 @@ def convert_qlinear_to_tman_linear(module: torch.nn.Module):
                 and hasattr(target_attr, "QUANT_TYPE")
             )
             if is_qlinear:
-                gptq_v2 = hasattr(target_attr, "SUPPORTS_BITS")
-                setattr(module, attr_str, TMANLinear(target_attr.qweight, target_attr.qzeros, target_attr.scales, gptq_v2))
+                setattr(module, attr_str, TMANLinear(target_attr))
 
         for _, sub_module in module.named_children():
             sub_module = replace_qlinear(sub_module)
@@ -344,14 +353,10 @@ def convert_qlinear_to_tman_linear(module: torch.nn.Module):
 
         for attr_str in attr_strs:
             target_attr = getattr(module, attr_str)
-            if isinstance(target_attr, torch.nn.Linear):
-                gptq_v2 = True
-                test_bits = 2
-                test_group_size = 64
-                qweight = torch.from_numpy(np.empty((target_attr.in_features // 32 * test_bits, target_attr.out_features), dtype=np.int32))
-                qzeros = torch.from_numpy(np.empty((target_attr.in_features // test_group_size, target_attr.out_features // 32 * test_bits), dtype=np.int32))
-                scales = torch.from_numpy(np.empty((target_attr.in_features // test_group_size, target_attr.out_features), dtype=np.float16))
-                setattr(module, attr_str, TMANLinear(qweight, qzeros, scales, gptq_v2))
+            vocab_size = 128256
+            # skip output linear
+            if isinstance(target_attr, torch.nn.Linear) and target_attr.out_features != vocab_size:
+                setattr(module, attr_str, TMANLinear(target_attr))
 
         for _, sub_module in module.named_children():
             sub_module = replace_linear(sub_module)

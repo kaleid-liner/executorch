@@ -168,6 +168,19 @@ Error QnnManager::RegisterMem(
 
   void* custom_mem_base = shared_buffer_manager.GetCustomMemBase(data_ptr);
   if (custom_mem_base != nullptr) {
+    size_t tensor_bytes = 0;
+    for (const auto& info : shared_buffer_manager.GetCustomMemTensorInfoSet()) {
+      if (info.tensor_addr == data_ptr) {
+        tensor_bytes = info.tensor_bytes;
+      }
+    }
+    if (tensor_bytes != tensor_wrapper->GetBytes()) {
+      QNN_EXECUTORCH_LOG_WARN(
+          "Tensor %s size %u is not equal to custom mem size %zu\n",
+          tensor_wrapper->GetName().c_str(),
+          tensor_wrapper->GetBytes(),
+          tensor_bytes);
+    }
     return RegisterCustomMem(data_ptr, custom_mem_base, tensor_wrapper);
   }
   return RegisterIonMem(data_ptr, tensor_wrapper);

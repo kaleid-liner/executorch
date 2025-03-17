@@ -55,6 +55,10 @@ DEFINE_string(
     kv_updater,
     "How to update kv cache. Choose between SmartMask and ShiftPointer",
     "SmartMask");
+DEFINE_string(
+    kv_type,
+    "Type of kv cache. Choose between uint8 and float32",
+    "uint8");
 
 int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
@@ -67,7 +71,8 @@ int main(int argc, char** argv) {
       FLAGS_logits_offset,
       FLAGS_temperature,
       FLAGS_eval_mode,
-      FLAGS_kv_updater);
+      FLAGS_kv_updater,
+      FLAGS_kv_type);
   std::vector<char> buf;
   buf.reserve(5 * FLAGS_seq_len); // assume each token is around 5 char
   std::ofstream fout(FLAGS_output_path.c_str());

@@ -44,6 +44,7 @@ from executorch.backends.qualcomm.utils.constants import (
 from executorch.backends.qualcomm.utils.utils import (
     capture_program,
     convert_linear_to_conv2d,
+    convert_qlinear_to_tman_linear,
     generate_composite_llama_program,
     generate_htp_compiler_spec,
     generate_multi_graph_program,
@@ -590,6 +591,8 @@ def compile(args, pte_filename, tokenizer):
                 "skip_node"
             ] = {"tokens"}
         llama_instance_list[i] = convert_linear_to_conv2d(llama_instance_list[i])
+        # llama_instance_list[i] = convert_qlinear_to_tman_linear(llama_instance_list[i])
+        print(llama_instance_list[i])
         llama_instance_list[i] = SingleLlama(
             llama_instance_list[i].eval(), pte_filename
         )

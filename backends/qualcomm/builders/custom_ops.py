@@ -13,11 +13,11 @@ def tman_linear(
     #  M or output features
     M = qweight.shape[0]
     out_shape = x.shape[:-1] + (M,)
-    return x.new_empty(out_shape)
+    return x.new_zeros(out_shape)
 
 
 @tman_linear.register_fake
 def _(x, qweight, scales, group_size, bits, symmetric):
     M = qweight.shape[0]
     out_shape = x.shape[:-1] + (M,)
-    return x.new_empty(out_shape)
+    return x.new_zeros(out_shape)

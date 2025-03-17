@@ -35,6 +35,16 @@ class Runner {
       const int eval_mode,
       const std::string& kv_updater);
 
+  explicit Runner(
+      const std::vector<std::string>& models_path,
+      const std::string& tokenizer_path,
+      const float logits_scale,
+      const int32_t logits_offset,
+      const float temperature,
+      const int eval_mode,
+      const std::string& kv_updater,
+      const std::string& kv_type);
+
   struct Stats {
     // Scaling factor for timestamps - in this case, we use ms.
     const long SCALING_FACTOR_UNITS_PER_SECOND = 1000;
@@ -115,6 +125,7 @@ class Runner {
   std::vector<std::string> method_names_;
   LlamaVersion llama_version_;
   std::string kv_updater_;
+  std::string kv_type_;
 };
 
 } // namespace example
