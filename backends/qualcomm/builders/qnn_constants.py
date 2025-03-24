@@ -478,3 +478,19 @@ class OpTMANLinear:
     param_group_size: str = "group_size"
     param_bits: str = "bits"
     param_symmetric: str = "symmetric"
+
+
+@dataclass(init=False, frozen=True)
+class OpTMANPrecompute:
+    op_name: str = "TMANPrecompute"
+    param_group_size: str = "group_size"
+    param_bits: str = "bits"
+    param_symmetric: str = "symmetric"
+
+
+@dataclass(init=False, frozen=True)
+class OpTMANFinalize:
+    op_name: str = "TMANFinalize"
+    param_group_size: str = "group_size"
+    param_bits: str = "bits"
+    param_symmetric: str = "symmetric"
