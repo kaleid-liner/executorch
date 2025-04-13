@@ -71,8 +71,7 @@ GraphStatus tmanprecomputeImpl(TensorType& l,
   const int32_t gemm_n = x.dims()[2];
 
   const int32_t group_size = ((const int32_t*)t_group_size.raw_data_const())[0];
-  // const bool zero_point    = ((const int32_t*)t_symmetric.raw_data_const())[0] == 0;
-  const bool zero_point = true;
+  const bool zero_point    = ((const int32_t*)t_symmetric.raw_data_const())[0] == 0;
 
   const int32_t l_size  = gemm_k / LUT_G * LUT_SIZE;
   const int32_t ls_size = (ACT_GROUP_SIZE == -1) ? 1 : (gemm_k / ACT_GROUP_SIZE);

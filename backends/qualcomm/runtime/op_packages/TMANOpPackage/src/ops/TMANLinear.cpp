@@ -75,8 +75,7 @@ GraphStatus tmanlinearImpl(TensorType& c,
 
   const int32_t group_size = ((const int32_t*)t_group_size.raw_data_const())[0];
   const int32_t bits       = ((const int32_t*)t_bits.raw_data_const())[0];
-  // const bool zero_point    = ((const int32_t*)t_symmetric.raw_data_const())[0] == 0;
-  const bool zero_point = true;
+  const bool zero_point    = ((const int32_t*)t_symmetric.raw_data_const())[0] == 0;
 
   const int32_t gemm_n = c.dims()[2];
   const int32_t gemm_m = qweight.dims()[2];

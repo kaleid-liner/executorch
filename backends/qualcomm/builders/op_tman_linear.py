@@ -98,12 +98,16 @@ class TMANLinear(NodeVisitor):
         k = input_tensor.shape[-1]
         m = output_tensor.shape[-1]
 
-        qweight_repacked, scales_repacked, zeros_repacked, _, _, _ = unpack_gptqv2(
+        qweight_repacked, scales_repacked, zeros_repacked, ref_bits, ref_group_size, ref_symmetric = unpack_gptqv2(
             qweight_tensor.detach().numpy(),
             scales_tensor.detach().numpy(),
             qzeros_tensor.detach().numpy(),
             gptq_v2,
         )
+        assert ref_bits == bits and ref_group_size == group_size and ref_symmetric == symmetric, (
+            f"TMANLinear: bits/group_size/symmetric mismatch, {ref_bits}/{ref_group_size}/{ref_symmetric} != {bits}/{group_size}/{symmetric}"
+        )
+        zeros_repacked = zeros_repacked if not symmetric else None
         qweight_repacked, scales_repacked = hvx_preprocess_weights_gptq(qweight_repacked, scales_repacked, zeros_repacked, bits, tile_p=m*bits)
 
         qweight_tensor_wrapper = self.define_tensor(
