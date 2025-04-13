@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 # model sharding with custom op
-set(CUSTOM_OP_SRCS_FILE 
+set(CUSTOM_OP_SRCS_FILE
   "${EXECUTORCH_SOURCE_DIR}/extension/llm/custom_ops/op_fallback.cpp"
 )
 add_library(custom_ops ${CUSTOM_OP_SRCS_FILE})
@@ -59,6 +59,8 @@ target_link_libraries(
   custom_ops
   quantized_ops_lib
   quantized_kernels
+  etdump
+  ${FLATCCRT_LIB}
 )
 target_compile_options(
   qnn_llama_runner PUBLIC ${_common_compile_options}

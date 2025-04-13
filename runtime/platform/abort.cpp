@@ -8,6 +8,7 @@
 
 #include <executorch/runtime/platform/abort.h>
 #include <executorch/runtime/platform/platform.h>
+#include <unistd.h>
 
 namespace executorch {
 namespace runtime {

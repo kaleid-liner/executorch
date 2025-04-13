@@ -17,6 +17,7 @@
 #include <executorch/runtime/core/exec_aten/exec_aten.h>
 #include <executorch/runtime/core/exec_aten/util/scalar_type_util.h>
 #include <executorch/runtime/platform/log.h>
+#include <executorch/runtime/core/event_tracer.h>
 #include <ctime>
 #include <fstream>
 #include <sstream>
@@ -29,11 +30,13 @@ using executorch::runtime::Error;
 using executorch::runtime::EValue;
 using executorch::runtime::MethodMeta;
 using executorch::runtime::Result;
+using executorch::runtime::Span;
 
 namespace example {
 
 namespace {
 static constexpr auto kTopp = 0.9f;
+static constexpr auto kDebugBufferSize = 200000000; // 200MB
 void printReport(const Runner::Stats& stats);
 std::string statsToJsonString(const Runner::Stats& stats);
 } // namespace
@@ -46,7 +49,8 @@ Runner::Runner(
     const float temperature,
     const int eval_mode,
     const std::string& kv_updater,
-    const std::string& kv_type)
+    const std::string& kv_type,
+    const bool dump_intermediate_outputs)
     : n_bos_(1),
       n_eos_(1),
       tokenizer_path_(tokenizer_path),
@@ -55,7 +59,9 @@ Runner::Runner(
       temperature_(temperature),
       eval_mode_(static_cast<EvalMode>(eval_mode)),
       kv_updater_(kv_updater),
-      kv_type_(kv_type) {
+      kv_type_(kv_type),
+      dump_intermediate_outputs_(dump_intermediate_outputs),
+      etdump_gen_(nullptr) {
   for (size_t i = 0; i < models_path.size(); ++i) {
     modules_.push_back(std::make_shared<Module>(
         models_path[i], Module::LoadMode::MmapUseMlockIgnoreErrors));
@@ -63,6 +69,15 @@ Runner::Runner(
   }
   ET_LOG(Info, "creating runner: tokenizer_path=%s", tokenizer_path_.c_str());
   ET_LOG(Info, "eval mode=%d", eval_mode_);
+  if (dump_intermediate_outputs_) {
+    etdump_gen_ = std::make_shared<executorch::etdump::ETDumpGen>();
+    ET_LOG(Info, "creating etdump_gen for intermediate outputs");
+    debug_buffer_ = malloc(kDebugBufferSize);
+    Span<uint8_t> buffer((uint8_t*)debug_buffer_, kDebugBufferSize);
+    etdump_gen_->set_debug_buffer(buffer);
+    etdump_gen_->set_event_tracer_debug_level(
+        executorch::runtime::EventTracerDebugLogLevel::kIntermediateOutputs);
+  }
 }
 
 Runner::Runner(
@@ -81,7 +96,8 @@ Runner::Runner(
           temperature,
           eval_mode,
           kv_updater,
-          "uint8") { }
+          "uint8",
+          false) { }
 
 bool Runner::is_loaded() const {
   bool loaded = true;
@@ -114,10 +130,10 @@ Error Runner::load() {
 
   for (std::shared_ptr<Module>& module : modules_) {
     if (!prefill_forward_name_.empty()) {
-      ET_CHECK_OK_OR_RETURN_ERROR(module->load_method(prefill_forward_name_));
+      ET_CHECK_OK_OR_RETURN_ERROR(module->load_method(prefill_forward_name_, etdump_gen_.get()));
     }
     if (!kv_forward_name_.empty()) {
-      ET_CHECK_OK_OR_RETURN_ERROR(module->load_method(kv_forward_name_));
+      ET_CHECK_OK_OR_RETURN_ERROR(module->load_method(kv_forward_name_, etdump_gen_.get()));
     }
   }
 
@@ -356,25 +372,25 @@ Error Runner::generate(
   stats_.model_load_end_ms = time_in_ms();
   stats_.inference_start_ms = time_in_ms();
 
-  ET_CHECK_MSG(!prompt.empty(), "prompt cannot be null");
+  // ET_CHECK_MSG(!prompt.empty(), "prompt cannot be null");
 
   switch (llama_version_) {
     case LlamaVersion::kLlama2:
       prompt_.append(prompt);
       break;
     case LlamaVersion::kLlama3:
-      if (!system_prompt.empty()) {
-        prompt_.append("<|start_header_id|>system<|end_header_id|>\n\n");
-        prompt_.append(system_prompt);
-        prompt_.append("<|eot_id|>");
-      }
-      prompt_.append("<|start_header_id|>user<|end_header_id|>\n\n");
+      // if (!system_prompt.empty()) {
+      //   prompt_.append("<|start_header_id|>system<|end_header_id|>\n\n");
+      //   prompt_.append(system_prompt);
+      //   prompt_.append("<|eot_id|>");
+      // }
+      // prompt_.append("<|start_header_id|>user<|end_header_id|>\n\n");
       prompt_.append(prompt);
-      prompt_.append(
-          "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n");
-      if (token_callback) {
-        token_callback("<|begin_of_text|>");
-      }
+      // prompt_.append(
+      //     "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n");
+      // if (token_callback) {
+      //   token_callback("<|begin_of_text|>");
+      // }
       break;
     default:
       ET_CHECK_MSG(false, "unsupported llama version");
@@ -495,6 +511,29 @@ Error Runner::generate(
     stats_callback(stats_);
   }
 
+  if (dump_intermediate_outputs_) {
+    auto result = etdump_gen_->get_etdump_data();
+    if (result.buf != nullptr && result.size > 0) {
+      ET_LOG(
+          Info,
+          "Write etdump to %s, Size = %zu",
+          "outputs/etdump.etdp",
+          result.size);
+      FILE* f = fopen("outputs/etdump.etdp", "w+");
+      fwrite((uint8_t*)result.buf, 1, result.size, f);
+      fclose(f);
+      free(result.buf);
+    }
+    ET_LOG(
+        Info,
+        "Write debug output binary to %s, Size = %zu",
+        "outputs/debug_output.bin",
+        (size_t)kDebugBufferSize);
+    FILE* f = fopen("outputs/debug_output.bin", "w+");
+    fwrite((uint8_t*)debug_buffer_, 1, kDebugBufferSize, f);
+    fclose(f);
+  }
+
   return Error::Ok;
 }
 
@@ -582,6 +621,7 @@ std::string statsToJsonString(const Runner::Stats& stats) {
      << "\"inference_end_ms\":" << stats.inference_end_ms << ","
      << "\"prompt_eval_end_ms\":" << stats.prompt_eval_end_ms << ","
      << "\"first_token_ms\":" << stats.first_token_ms << ","
+     << "\"tokens_per_second\":" << stats.num_generated_tokens * 1000 / (stats.inference_end_ms - stats.prompt_eval_end_ms) << ","
      << "\"aggregate_sampling_time_ms\":" << stats.aggregate_sampling_time_ms
      << "," << "\"SCALING_FACTOR_UNITS_PER_SECOND\":"
      << stats.SCALING_FACTOR_UNITS_PER_SECOND << "}";

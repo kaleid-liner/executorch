@@ -19,14 +19,18 @@ BEGIN_PKG_OPS_OPTS_LIST()
  *  registered to the HTP Core.
  *  Append the latest OpName at the bottom
  */
+DECLARE_PKG_OPS_OPTS_LIST(PKG_TMANPrecompute)
 DECLARE_PKG_OPS_OPTS_LIST(PKG_TMANLinear)
+DECLARE_PKG_OPS_OPTS_LIST(PKG_TMANFinalize)
 
 END_PKG_OPS_OPTS_LIST()
 
 // op package info
 static constexpr auto sg_packageName = THIS_PKG_NAME_STR;  // package name passed in as compile flag
 
-static std::array<const char*, 1> sg_opNames{{"TMANLinear"}};
+static std::array<const char*, 3> sg_opNames{{"TMANLinear",
+                                              "TMANFinalize",
+                                              "TMANPrecompute"}};
 
 static Qnn_ApiVersion_t sg_sdkApiVersion  = QNN_HTP_API_VERSION_INIT;
 static QnnOpPackage_Info_t sg_packageInfo = QNN_OP_PACKAGE_INFO_INIT;
@@ -211,7 +215,17 @@ Qnn_ErrorHandle_t TMANOpPackageValidateOpConfig (Qnn_OpConfig_t opConfig){
      * If a match is found, check number of inputs, outputs and params
      */
     if (std::string(opConfig.v1.typeName) == "TMANLinear"){
-        if (opConfig.v1.numOfParams != 3 || opConfig.v1.numOfInputs != 3 || opConfig.v1.numOfOutputs != 2){
+        if (opConfig.v1.numOfParams != 3 || opConfig.v1.numOfInputs != 3 || opConfig.v1.numOfOutputs != 1){
+          return QNN_OP_PACKAGE_ERROR_VALIDATION_FAILURE;
+        }
+    }
+    else if (std::string(opConfig.v1.typeName) == "TMANFinalize"){
+        if (opConfig.v1.numOfParams != 3 || opConfig.v1.numOfInputs != 1 || opConfig.v1.numOfOutputs != 1){
+          return QNN_OP_PACKAGE_ERROR_VALIDATION_FAILURE;
+        }
+    }
+    else if (std::string(opConfig.v1.typeName) == "TMANPrecompute"){
+        if (opConfig.v1.numOfParams != 3 || opConfig.v1.numOfInputs != 1 || opConfig.v1.numOfOutputs != 1){
           return QNN_OP_PACKAGE_ERROR_VALIDATION_FAILURE;
         }
     }

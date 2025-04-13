@@ -59,6 +59,10 @@ DEFINE_string(
     kv_type,
     "Type of kv cache. Choose between uint8 and float32",
     "uint8");
+DEFINE_bool(
+    dump_intermediate_outputs,
+    false,
+    "Dump intermediate outputs to etdump file.");
 
 int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
@@ -72,7 +76,8 @@ int main(int argc, char** argv) {
       FLAGS_temperature,
       FLAGS_eval_mode,
       FLAGS_kv_updater,
-      FLAGS_kv_type);
+      FLAGS_kv_type,
+      FLAGS_dump_intermediate_outputs);
   std::vector<char> buf;
   buf.reserve(5 * FLAGS_seq_len); // assume each token is around 5 char
   std::ofstream fout(FLAGS_output_path.c_str());

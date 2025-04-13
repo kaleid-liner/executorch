@@ -20,6 +20,7 @@
 #include <executorch/runtime/platform/assert.h>
 
 #include <flatcc/flatcc_types.h>
+#include <typeinfo>
 
 using ::executorch::aten::Tensor;
 using ::executorch::runtime::AllocatorID;

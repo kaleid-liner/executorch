@@ -45,6 +45,8 @@ from executorch.backends.qualcomm.utils.utils import (
     capture_program,
     convert_linear_to_conv2d,
     convert_qlinear_to_tman_linear,
+    convert_qlinear_to_linear,
+    convert_linear_to_qlinear,
     generate_composite_llama_program,
     generate_htp_compiler_spec,
     generate_multi_graph_program,
@@ -62,6 +64,7 @@ from executorch.examples.models.llama.tokenizer.tiktoken import Tokenizer as Tik
 from executorch.examples.qualcomm.oss_scripts.llama.model.static_llama import (
     LlamaModel,
     ModelArgs,
+    LlamaDecoderLayer,
 )
 from executorch.examples.qualcomm.utils import (
     make_output_dir,
@@ -285,6 +288,14 @@ def calibrate(
         raise RuntimeError("Get wrong inputs")
 
 
+def permute(weights: torch.Tensor, n_head: int, n_head_kv: int | None):
+    if n_head_kv is not None and n_head != n_head_kv:
+        n_head = n_head_kv
+    return (weights.reshape(n_head, 2, weights.shape[0] // n_head // 2, *weights.shape[1:])
+            .swapaxes(1, 2)
+            .reshape(weights.shape))
+
+
 class SingleLlama:
     def __init__(self, llama_model, pte_filename) -> None:
         super().__init__()
@@ -436,6 +447,7 @@ class SingleLlama:
                 soc_model=soc_model,
                 backend_options=backend_options,
                 shared_buffer=shared_buffer,
+                dump_intermediate_outputs=True,
             )
             skip_node_op_set = {"llama.fallback.default"}
             partitioner = QnnPartitioner(
@@ -537,13 +549,37 @@ def compile(args, pte_filename, tokenizer):
         else:
             raise RuntimeError(f"Unknown model_mode: {args.model_mode}.")
 
+    if args.gptq_dir:
+        from gptqmodel.quantization.config import QuantizeConfig
+        from gptqmodel.nn_modules.qlinear.torch import TorchQuantLinear
+        qcfg = QuantizeConfig.from_pretrained(args.gptq_dir)
+        if qcfg.desc_act:
+            raise RuntimeError(
+                "desc_act=True is unsupported right now."
+            )
+        qlinear_cls = partial(
+            TorchQuantLinear,
+            bits=qcfg.bits,
+            group_size=qcfg.group_size,
+            desc_act=qcfg.desc_act,
+            sym=qcfg.sym,
+            pack_dtype=qcfg.pack_dtype,
+            device=qcfg.device,
+            adapter=qcfg.adapter,
+        )
+        for llama_instance in llama_instance_list:
+            layer: LlamaDecoderLayer
+            for layer in llama_instance.layers:
+                convert_linear_to_qlinear(layer.attention, qlinear_cls)
+                convert_linear_to_qlinear(layer.feed_forward, qlinear_cls)
+
     if "model" in state_dict:
         state_dict = state_dict["model"]
 
     for llama_instance in llama_instance_list:
         llama_instance.load_state_dict(
             state_dict,
-            strict=False,
+            strict=True,
             assign=True,
         )
     end_load_ts = time.time()
@@ -551,10 +587,16 @@ def compile(args, pte_filename, tokenizer):
 
     for llama_instance in llama_instance_list:
         for layer in llama_instance.layers:
+            if args.gptq_dir:
+                convert_qlinear_to_linear(layer.attention)
+                convert_qlinear_to_tman_linear(layer.feed_forward)
+                # convert_qlinear_to_linear(layer.feed_forward)
+                layer.attention.wq.weight.data.copy_(permute(layer.attention.wq.weight, kv_config.n_heads, kv_config.n_heads))
+                layer.attention.wk.weight.data.copy_(permute(layer.attention.wk.weight, kv_config.n_heads, kv_config.n_kv_heads))
             if getattr(layer.attention, "prepare_sha", None):
                 layer.attention.prepare_sha()
-            if getattr(layer.feed_forward, "prepare_feedfoward_conv", None):
-                layer.feed_forward.prepare_feedfoward_conv()
+            # if getattr(layer.feed_forward, "prepare_feedfoward_conv", None):
+            #     layer.feed_forward.prepare_feedfoward_conv()
 
     use_fp16 = True
     fixed_point_type = {"kv_type": torch.float32, "io_type": torch.float32}
@@ -1058,6 +1100,13 @@ def _build_parser():
         default=None,
         type=str,
         help="Fallback to cpu embedding operator and type of embedding quantization, '<bitwidth>,<groupsize>', e.g., '4,32'.",
+    )
+
+    parser.add_argument(
+        "--gptq_dir",
+        default=None,
+        type=str,
+        help="Path to the GPTQ model dir, which should contain config.json or quantize_config.json.",
     )
 
     parser.add_argument("-v", "--verbose", action="store_true")

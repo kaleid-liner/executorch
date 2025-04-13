@@ -49,11 +49,13 @@ class QnnOperatorSupport(OperatorSupportBase):
         self.skip_node_op_set = skip_node_op_set
         self.skip_node_id_set = skip_node_id_set
         self.nodes_to_wrappers = defaultdict(dict)
-        self.qnn_manager = PyQnnManager.QnnManager(
-            generate_qnn_executorch_option(compiler_specs)
-        )
+        # TODO: [ERROR] [Qnn ExecuTorch]: tcm_migration.cc:174:ERROR:Memory properties specified twice for operator ::TMANLinear
+        #       Find a better way to handle this bug of QNN
+        # self.qnn_manager = PyQnnManager.QnnManager(
+        #     generate_qnn_executorch_option(compiler_specs)
+        # )
 
-        self.qnn_manager.Init()
+        # self.qnn_manager.Init()
 
     def is_node_supported(self, _, node: torch.fx.Node) -> bool:
         if node.op != "call_function" or node.target in not_supported_operator:
@@ -93,16 +95,17 @@ class QnnOperatorSupport(OperatorSupportBase):
             op_wrapper_list.append(op_wrapper)
 
         if op_wrapper is not None:
-            supported = self.qnn_manager.IsNodeSupportedByBackend(
-                [op_wrapper.GetOpWrapper() for op_wrapper in op_wrapper_list]
-            )
+            # supported = self.qnn_manager.IsNodeSupportedByBackend(
+            #     [op_wrapper.GetOpWrapper() for op_wrapper in op_wrapper_list]
+            # )
+            supported = True
 
         self.nodes_to_wrappers.clear()
         print(f"[QNN Partitioner Op Support]: {node.target.__name__} | {supported}")
         return supported
 
-    def __del__(self):
-        self.qnn_manager.Destroy()
+    # def __del__(self):
+    #     self.qnn_manager.Destroy()
 
 
 class QnnPartitioner(Partitioner):

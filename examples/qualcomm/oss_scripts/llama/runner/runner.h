@@ -21,6 +21,7 @@
 #include <executorch/extension/llm/sampler/sampler.h>
 #include <executorch/extension/llm/tokenizer/tokenizer.h>
 #include <executorch/extension/module/module.h>
+#include <executorch/devtools/etdump/etdump_flatcc.h>
 
 namespace example {
 
@@ -43,7 +44,14 @@ class Runner {
       const float temperature,
       const int eval_mode,
       const std::string& kv_updater,
-      const std::string& kv_type);
+      const std::string& kv_type,
+      const bool dump_intermediate_outputs);
+
+  ~Runner() {
+    if (debug_buffer_) {
+      free(debug_buffer_);
+    }
+  }
 
   struct Stats {
     // Scaling factor for timestamps - in this case, we use ms.
@@ -126,6 +134,9 @@ class Runner {
   LlamaVersion llama_version_;
   std::string kv_updater_;
   std::string kv_type_;
+  bool dump_intermediate_outputs_{false};
+  std::shared_ptr<executorch::etdump::ETDumpGen> etdump_gen_;
+  void* debug_buffer_{nullptr};
 };
 
 } // namespace example
