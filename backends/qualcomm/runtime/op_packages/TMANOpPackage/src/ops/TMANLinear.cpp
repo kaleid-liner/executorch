@@ -25,7 +25,6 @@ static Qnn_Scalar_t sg_opDefaultSymmetricScalar = {.dataType = Qnn_DataType_t::Q
                                                   .int32Value = 0};
 static Qnn_Param_t sg_opDefaultSymmetric = {.paramType = QNN_PARAMTYPE_SCALAR,
                                            .scalarParam = sg_opDefaultSymmetricScalar};
-static int called_times = 0;
 
 template<typename TensorType>
 GraphStatus tmanlinearImpl(TensorType& c,
@@ -97,49 +96,24 @@ GraphStatus tmanlinearImpl(TensorType& c,
 
   if (zero_point && bits == 2 && group_size == 64)  // w2g64, symmetric=False
   {
-    // hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 64, true, 2, TILE_K, LUT_G>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
+    hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 64, true, 2, TILE_K, LUT_G>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
   }
   else if (!zero_point && bits == 4 && group_size == 128)  // w4g128, symmetric=True
   {
-    // hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 128, false, 4, TILE_K, LUT_G>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
+    hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 128, false, 4, TILE_K, LUT_G>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
   }
   else if (zero_point && bits == 4 && group_size == 128)  // w4g128, symmetric=False
   {
-    hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 128, true, 4, TILE_K, LUT_G>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr, called_times == 4370);
-    // printf("linear: gemm_m: %d, gemm_k: %d, gemm_n: %d, group_size: %d, bits: %d, time: %d\n", gemm_m, gemm_k, gemm_n, group_size, bits, called_times);
+    hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 128, true, 4, TILE_K, LUT_G>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
   }
   else if (zero_point && bits == 4 && group_size == 64)  // w4g64, symmetric=False
   {
-    // hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 64, true, 4, TILE_K, LUT_G>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
+    hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 64, true, 4, TILE_K, LUT_G>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
   }
   else
   {
     return GraphStatus::ErrorDimensions;
   }
-  // if (called_times == 4370)
-  // {
-  //   FILE* fp;
-  //   fp = fopen("c.bin", "wb");
-  //   fwrite(c_ptr, sizeof(CType), gemm_m * bits, fp);
-  //   fclose(fp);
-  //   printf("l_ptr: %p, ls_ptr: %p, lb_ptr: %p, w_ptr: %p, s_ptr: %p, c_ptr: %p\n", l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
-  //   fp = fopen("w.bin", "wb");
-  //   fwrite(w_ptr, sizeof(uint8_t), gemm_m * gemm_k * bits / 32, fp);
-  //   fclose(fp);
-  //   fp = fopen("s.bin", "wb");
-  //   fwrite(s_ptr, sizeof(XType), gemm_m * gemm_k / group_size * (1 + zero_point), fp);
-  //   fclose(fp);
-  //   fp = fopen("l2.bin", "wb");
-  //   fwrite(l_ptr, sizeof(LType), l_size, fp);
-  //   fclose(fp);
-  //   fp = fopen("ls2.bin", "wb");
-  //   fwrite(ls_ptr, sizeof(float), ls_size, fp);
-  //   fclose(fp);
-  //   fp = fopen("lb2.bin", "wb");
-  //   fwrite(lb_ptr, sizeof(float), gemm_k / group_size, fp);
-  //   fclose(fp);
-  // }
-  called_times += 1;
 
   return GraphStatus::Success;
 }

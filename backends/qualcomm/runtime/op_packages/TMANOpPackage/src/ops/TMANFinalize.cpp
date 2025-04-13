@@ -25,7 +25,6 @@ static Qnn_Scalar_t sg_opDefaultSymmetricScalar = {.dataType = Qnn_DataType_t::Q
                                                   .int32Value = 0};
 static Qnn_Param_t sg_opDefaultSymmetric = {.paramType = QNN_PARAMTYPE_SCALAR,
                                            .scalarParam = sg_opDefaultSymmetricScalar};
-static int called_times = 0;
 
 template<typename TensorType>
 GraphStatus tmanfinalizeImpl(TensorType& y,
@@ -90,18 +89,6 @@ GraphStatus tmanfinalizeImpl(TensorType& y,
   {
     return GraphStatus::ErrorDimensions;
   }
-  // printf("finalize: gemm_m: %d, gemm_n: %d, time: %d\n", gemm_m, gemm_n, called_times);
-  // if (called_times == 4370)
-  // {
-  //   FILE* fp;
-  //   fp = fopen("y.bin", "wb");
-  //   fwrite(y_ptr, sizeof(XType), gemm_m * gemm_n, fp);
-  //   fclose(fp);
-  //   fp = fopen("c2.bin", "wb");
-  //   fwrite(c_ptr, sizeof(CType), gemm_m * bits, fp);
-  //   fclose(fp);
-  // }
-  called_times += 1;
 
   const HVX_Vector ones_vec = Q6_Vh_vsplat_R(0x3C00);
   const HVX_Vector zero_vec = Q6_V_vzero();

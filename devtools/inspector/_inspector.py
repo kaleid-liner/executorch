@@ -613,16 +613,15 @@ class Event:
             if len(debug_data) == 0:
                 debug_data = [debug_event.debug_entry for debug_event in debug_events]
             else:
-                pass
-                # for debug_event, value in zip(debug_events, debug_data):
-                #     v1 = inflate_runtime_output(debug_event.debug_entry, output_buffer)
-                #     v2 = inflate_runtime_output(value, output_buffer)
-                #     assert is_inference_output_equal(
-                #         v1, v2
-                #     ), """Corresponding debug events in multiple iterations of the model
-                #     must have the same debug entry values. This is not the case for the
-                #     intermediate data present in this ETDump and indicates potential issues
-                #     with the model/runtime."""
+                for debug_event, value in zip(debug_events, debug_data):
+                    v1 = inflate_runtime_output(debug_event.debug_entry, output_buffer)
+                    v2 = inflate_runtime_output(value, output_buffer)
+                    assert is_inference_output_equal(
+                        v1, v2
+                    ), """Corresponding debug events in multiple iterations of the model
+                    must have the same debug entry values. This is not the case for the
+                    intermediate data present in this ETDump and indicates potential issues
+                    with the model/runtime."""
 
         ret_event.debug_data = [
             inflate_runtime_output(debug_value, output_buffer)

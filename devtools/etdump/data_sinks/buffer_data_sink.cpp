@@ -50,12 +50,7 @@ Result<size_t> BufferDataSink::write(const void* ptr, size_t length) {
 
   // Zero out the padding between data blobs
   memset(last_data_end, 0, cur_data_begin - last_data_end);
-  if (length == 4096 || length == 16384) {
-    // This is a workaround for the issue that the data blob is invalid for some tensors
-    memcpy(cur_data_begin, ptr, length);
-  } else {
-    memset(cur_data_begin, 0, length);
-  }
+  memcpy(cur_data_begin, ptr, length);
   offset_ = (size_t)(cur_data_end - debug_buffer_.data());
 
   return (size_t)(cur_data_begin - debug_buffer_.data());

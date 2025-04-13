@@ -584,7 +584,7 @@ def capture_program(
 ) -> exir.ExirExportedProgram:
     module = _preprocess_module(module, inputs)
     ep = torch.export.export(module, inputs, dynamic_shapes=dynamic_shapes)
-    torch.export.save(ep, "temp.pt2")
+    # torch.export.save(ep, "temp.pt2")
     # ep = torch.export.load("temp.pt2")
     decomposed_ep = ep.run_decompositions(get_decomp_table())
     core_ep = ExirExportedProgram(decomposed_ep, False)

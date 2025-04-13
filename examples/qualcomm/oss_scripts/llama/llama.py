@@ -447,7 +447,6 @@ class SingleLlama:
                 soc_model=soc_model,
                 backend_options=backend_options,
                 shared_buffer=shared_buffer,
-                dump_intermediate_outputs=True,
             )
             skip_node_op_set = {"llama.fallback.default"}
             partitioner = QnnPartitioner(

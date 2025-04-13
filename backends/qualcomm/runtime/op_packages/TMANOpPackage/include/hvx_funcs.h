@@ -301,7 +301,7 @@ template <typename LType = int16_t,
           int TileK = 256,
           int g = 4>
 inline typename std::enable_if_t<std::is_same<LType, int16_t>::value && std::is_same<XType, __fp16>::value && std::is_same<CType, float>::value, int>
-hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float *ls, const float *lb, const uint8_t *w, const XType *s, CType *c, bool do_print)
+hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float *ls, const float *lb, const uint8_t *w, const XType *s, CType *c)
 {
   UNUSED(GemmN);
 
@@ -417,10 +417,6 @@ hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float
         HVX_Vector w_vec_hi_bo = Q6_V_vand_VV(w_vec_hi, mask_vec);     // Q = 2
         HVX_Vector w_vec_lo_to = Q6_Vh_vasr_VhR(w_vec_lo, shift_len);  // Q = 1
         HVX_Vector w_vec_hi_to = Q6_Vh_vasr_VhR(w_vec_hi, shift_len);  // Q = 3
-        // if ((tile_q + vec_q == 512))
-        // {
-        //   printf("w_vec_lo_bo: %x\n", Q6_R_vextract_VR(w_vec_lo_bo, 0));
-        // }
 
         // int16_t
         // c_vec_lo_bo_lo: even bytes of w_vec_lo_bo, c_vec_lo_bo_hi: odd bytes of w_vec_lo_bo
@@ -451,10 +447,6 @@ hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float
         }
         c_vec_lo = Q6_Ww_vaddacc_WwVhVh(c_vec_lo, Q6_V_lo_W(c_vec_lo_to), Q6_V_lo_W(c_vec_hi_to));
         c_vec_hi = Q6_Ww_vaddacc_WwVhVh(c_vec_hi, Q6_V_hi_W(c_vec_lo_to), Q6_V_hi_W(c_vec_hi_to));
-        // if ((tile_q + vec_q == 0) && do_print)
-        // {
-        //   printf("c_vec_lo_lo: %x\n", Q6_R_vextract_VR(Q6_V_lo_W(c_vec_lo), 0));
-        // }
 
         // qf32
         if (cmp_blk_tail)
@@ -530,18 +522,10 @@ hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float
         }
       }
 
-      // if (vec_p == 0 && do_print)
-      // {
-      //   printf("c[0]: %d\n", ((const int32_t*)c)[0]);
-      // }
       vmem(c + (vec_p +  0)) = c_vec_0;
       vmem(c + (vec_p + 32)) = c_vec_1;
       vmem(c + (vec_p + 64)) = c_vec_2;
       vmem(c + (vec_p + 96)) = c_vec_3;
-      // if (vec_p == 0 && do_print)
-      // {
-      //   printf("c[0]: %d\n", ((const int32_t*)c)[0]);
-      // }
     }
   }
 

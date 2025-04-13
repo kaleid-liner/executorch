@@ -372,25 +372,25 @@ Error Runner::generate(
   stats_.model_load_end_ms = time_in_ms();
   stats_.inference_start_ms = time_in_ms();
 
-  // ET_CHECK_MSG(!prompt.empty(), "prompt cannot be null");
+  ET_CHECK_MSG(!prompt.empty(), "prompt cannot be null");
 
   switch (llama_version_) {
     case LlamaVersion::kLlama2:
       prompt_.append(prompt);
       break;
     case LlamaVersion::kLlama3:
-      // if (!system_prompt.empty()) {
-      //   prompt_.append("<|start_header_id|>system<|end_header_id|>\n\n");
-      //   prompt_.append(system_prompt);
-      //   prompt_.append("<|eot_id|>");
-      // }
-      // prompt_.append("<|start_header_id|>user<|end_header_id|>\n\n");
+      if (!system_prompt.empty()) {
+        prompt_.append("<|start_header_id|>system<|end_header_id|>\n\n");
+        prompt_.append(system_prompt);
+        prompt_.append("<|eot_id|>");
+      }
+      prompt_.append("<|start_header_id|>user<|end_header_id|>\n\n");
       prompt_.append(prompt);
-      // prompt_.append(
-      //     "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n");
-      // if (token_callback) {
-      //   token_callback("<|begin_of_text|>");
-      // }
+      prompt_.append(
+          "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n");
+      if (token_callback) {
+        token_callback("<|begin_of_text|>");
+      }
       break;
     default:
       ET_CHECK_MSG(false, "unsupported llama version");

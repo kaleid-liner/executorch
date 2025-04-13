@@ -11,7 +11,6 @@
 #include <executorch/runtime/platform/abort.h>
 #include <executorch/runtime/platform/compiler.h>
 #include <executorch/runtime/platform/log.h>
-#include <stdio.h>
 
 /**
  * Assertion failure message emit method.
@@ -38,8 +37,6 @@
   do {                                                                  \
     if ET_UNLIKELY (!(_cond)) {                                         \
       ET_ASSERT_MESSAGE_EMIT(" (%s): " _format, #_cond, ##__VA_ARGS__); \
-      printf(_format, ##__VA_ARGS__);                                 \
-      fflush(stdout);                                               \
       ::executorch::runtime::runtime_abort();                           \
     }                                                                   \
   } while (0)

@@ -25,7 +25,6 @@ static Qnn_Scalar_t sg_opDefaultSymmetricScalar = {.dataType = Qnn_DataType_t::Q
                                                   .int32Value = 0};
 static Qnn_Param_t sg_opDefaultSymmetric = {.paramType = QNN_PARAMTYPE_SCALAR,
                                            .scalarParam = sg_opDefaultSymmetricScalar};
-static int called_times = 0;
 
 template<typename TensorType>
 GraphStatus tmanprecomputeImpl(TensorType& l,
@@ -126,24 +125,6 @@ GraphStatus tmanprecomputeImpl(TensorType& l,
   {
     return GraphStatus::ErrorDimensions;
   }
-//   printf("precompute: gemm_k: %d, gemm_n: %d, group_size: %d, time: %d\n", gemm_k, gemm_n, group_size, called_times);
-  // if (called_times == 2913)
-  // {
-  //   FILE* fp;
-  //   fp = fopen("x.bin", "wb");
-  //   fwrite(x_buf, sizeof(XType), gemm_k * gemm_n, fp);
-  //   fclose(fp);
-  //   fp = fopen("l.bin", "wb");
-  //   fwrite(l_ptr, sizeof(LType), l_size, fp);
-  //   fclose(fp);
-  //   fp = fopen("ls.bin", "wb");
-  //   fwrite(ls_ptr, sizeof(float), ls_size, fp);
-  //   fclose(fp);
-  //   fp = fopen("lb.bin", "wb");
-  //   fwrite(lb_ptr, sizeof(float), gemm_k / group_size, fp);
-  //   fclose(fp);
-  // }
-  called_times += 1;
 
   return GraphStatus::Success;
 }
