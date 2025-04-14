@@ -17,7 +17,6 @@
 #include <executorch/runtime/core/exec_aten/exec_aten.h>
 #include <executorch/runtime/core/exec_aten/util/scalar_type_util.h>
 #include <executorch/runtime/platform/log.h>
-#include <executorch/runtime/core/event_tracer.h>
 #include <ctime>
 #include <fstream>
 #include <sstream>
@@ -49,8 +48,7 @@ Runner::Runner(
     const float temperature,
     const int eval_mode,
     const std::string& kv_updater,
-    const std::string& kv_type,
-    const bool dump_intermediate_outputs)
+    const std::string& kv_type)
     : n_bos_(1),
       n_eos_(1),
       tokenizer_path_(tokenizer_path),
@@ -59,9 +57,7 @@ Runner::Runner(
       temperature_(temperature),
       eval_mode_(static_cast<EvalMode>(eval_mode)),
       kv_updater_(kv_updater),
-      kv_type_(kv_type),
-      dump_intermediate_outputs_(dump_intermediate_outputs),
-      etdump_gen_(nullptr) {
+      kv_type_(kv_type) {
   for (size_t i = 0; i < models_path.size(); ++i) {
     modules_.push_back(std::make_shared<Module>(
         models_path[i], Module::LoadMode::MmapUseMlockIgnoreErrors));
@@ -69,15 +65,6 @@ Runner::Runner(
   }
   ET_LOG(Info, "creating runner: tokenizer_path=%s", tokenizer_path_.c_str());
   ET_LOG(Info, "eval mode=%d", eval_mode_);
-  if (dump_intermediate_outputs_) {
-    etdump_gen_ = std::make_shared<executorch::etdump::ETDumpGen>();
-    ET_LOG(Info, "creating etdump_gen for intermediate outputs");
-    debug_buffer_ = malloc(kDebugBufferSize);
-    Span<uint8_t> buffer((uint8_t*)debug_buffer_, kDebugBufferSize);
-    etdump_gen_->set_debug_buffer(buffer);
-    etdump_gen_->set_event_tracer_debug_level(
-        executorch::runtime::EventTracerDebugLogLevel::kIntermediateOutputs);
-  }
 }
 
 Runner::Runner(
@@ -96,8 +83,7 @@ Runner::Runner(
           temperature,
           eval_mode,
           kv_updater,
-          "uint8",
-          false) { }
+          "uint8") { }
 
 bool Runner::is_loaded() const {
   bool loaded = true;
@@ -130,10 +116,10 @@ Error Runner::load() {
 
   for (std::shared_ptr<Module>& module : modules_) {
     if (!prefill_forward_name_.empty()) {
-      ET_CHECK_OK_OR_RETURN_ERROR(module->load_method(prefill_forward_name_, etdump_gen_.get()));
+      ET_CHECK_OK_OR_RETURN_ERROR(module->load_method(prefill_forward_name_));
     }
     if (!kv_forward_name_.empty()) {
-      ET_CHECK_OK_OR_RETURN_ERROR(module->load_method(kv_forward_name_, etdump_gen_.get()));
+      ET_CHECK_OK_OR_RETURN_ERROR(module->load_method(kv_forward_name_));
     }
   }
 
@@ -348,25 +334,25 @@ Error Runner::generate(
   if (!is_loaded()) {
     stats_.model_load_start_ms = time_in_ms();
     ET_CHECK_OK_OR_RETURN_ERROR(load());
-    for (auto method_name : method_names_) {
-      for (int i = 0; i < modules_.size(); ++i) {
-        input_tensors[method_name].emplace_back(
-            io_mgr_->get_input_tensors(i, method_name));
-        output_tensors[method_name].emplace_back(
-            io_mgr_->get_output_tensors(i, method_name));
-        for (size_t j = 0; j < output_tensors[method_name][i].size(); ++j) {
-          ET_CHECK_MSG(
-              modules_[i]->set_output(
-                  method_name, output_tensors[method_name][i][j], j) ==
-                  Error::Ok,
-              "failed to set output tensor for module %d's %zu'th output",
-              i,
-              j);
-        }
-        inputs[method_name].emplace_back(std::vector<EValue>(
-            begin(input_tensors[method_name][i]),
-            end(input_tensors[method_name][i])));
+  }
+  for (auto method_name : method_names_) {
+    for (int i = 0; i < modules_.size(); ++i) {
+      input_tensors[method_name].emplace_back(
+          io_mgr_->get_input_tensors(i, method_name));
+      output_tensors[method_name].emplace_back(
+          io_mgr_->get_output_tensors(i, method_name));
+      for (size_t j = 0; j < output_tensors[method_name][i].size(); ++j) {
+        ET_CHECK_MSG(
+            modules_[i]->set_output(
+                method_name, output_tensors[method_name][i][j], j) ==
+                Error::Ok,
+            "failed to set output tensor for module %d's %zu'th output",
+            i,
+            j);
       }
+      inputs[method_name].emplace_back(std::vector<EValue>(
+          begin(input_tensors[method_name][i]),
+          end(input_tensors[method_name][i])));
     }
   }
   stats_.model_load_end_ms = time_in_ms();
@@ -379,18 +365,18 @@ Error Runner::generate(
       prompt_.append(prompt);
       break;
     case LlamaVersion::kLlama3:
-      if (!system_prompt.empty()) {
-        prompt_.append("<|start_header_id|>system<|end_header_id|>\n\n");
-        prompt_.append(system_prompt);
-        prompt_.append("<|eot_id|>");
-      }
-      prompt_.append("<|start_header_id|>user<|end_header_id|>\n\n");
+      // if (!system_prompt.empty()) {
+      //   prompt_.append("<|start_header_id|>system<|end_header_id|>\n\n");
+      //   prompt_.append(system_prompt);
+      //   prompt_.append("<|eot_id|>");
+      // }
+      // prompt_.append("<|start_header_id|>user<|end_header_id|>\n\n");
       prompt_.append(prompt);
-      prompt_.append(
-          "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n");
-      if (token_callback) {
-        token_callback("<|begin_of_text|>");
-      }
+      // prompt_.append(
+      //     "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n");
+      // if (token_callback) {
+      //   token_callback("<|begin_of_text|>");
+      // }
       break;
     default:
       ET_CHECK_MSG(false, "unsupported llama version");
@@ -511,29 +497,6 @@ Error Runner::generate(
     stats_callback(stats_);
   }
 
-  if (dump_intermediate_outputs_) {
-    auto result = etdump_gen_->get_etdump_data();
-    if (result.buf != nullptr && result.size > 0) {
-      ET_LOG(
-          Info,
-          "Write etdump to %s, Size = %zu",
-          "outputs/etdump.etdp",
-          result.size);
-      FILE* f = fopen("outputs/etdump.etdp", "w+");
-      fwrite((uint8_t*)result.buf, 1, result.size, f);
-      fclose(f);
-      free(result.buf);
-    }
-    ET_LOG(
-        Info,
-        "Write debug output binary to %s, Size = %zu",
-        "outputs/debug_output.bin",
-        (size_t)kDebugBufferSize);
-    FILE* f = fopen("outputs/debug_output.bin", "w+");
-    fwrite((uint8_t*)debug_buffer_, 1, kDebugBufferSize, f);
-    fclose(f);
-  }
-
   return Error::Ok;
 }
 
@@ -607,7 +570,7 @@ void printReport(const Runner::Stats& stats) {
     outfile << num_tok;
     outfile.close();
   } else {
-    ET_CHECK_MSG(false, "Error saving the inference speed file");
+    ET_LOG(Error, "Error saving the inference speed file");
   }
 }
 
@@ -637,5 +600,9 @@ std::vector<Result<MethodMeta>> Runner::get_methods_meta(
     methods_meta.emplace_back(module->method_meta(method_name));
   }
   return methods_meta;
+}
+
+void Runner::stop() {
+  ET_LOG(Error, "Not implemented yet");
 }
 } // namespace example

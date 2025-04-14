@@ -74,7 +74,8 @@ Error QnnBackend::Configure() {
   }
 
   // Expose API to options in QnnManager later
-  std::string opPackagePaths = std::getenv("QNN_OP_PACKAGE_PATHS");
+  // std::string opPackagePaths = std::getenv("QNN_OP_PACKAGE_PATHS");
+  std::string opPackagePaths = "/data/local/tmp/llama/libQnnTMANOpPackage.so:TMANOpPackageInterfaceProvider:HTP";
   std::vector<std::string> m_opPackagePaths;
   split(m_opPackagePaths, opPackagePaths, ',');
 

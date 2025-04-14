@@ -20,12 +20,12 @@
 #include <executorch/examples/qualcomm/oss_scripts/llama/runner/io_manager.h>
 #include <executorch/extension/llm/sampler/sampler.h>
 #include <executorch/extension/llm/tokenizer/tokenizer.h>
+#include <executorch/extension/llm/runner/irunner.h>
 #include <executorch/extension/module/module.h>
-#include <executorch/devtools/etdump/etdump_flatcc.h>
 
 namespace example {
 
-class Runner {
+class Runner : public executorch::extension::llm::IRunner {
  public:
   explicit Runner(
       const std::vector<std::string>& models_path,
@@ -44,14 +44,7 @@ class Runner {
       const float temperature,
       const int eval_mode,
       const std::string& kv_updater,
-      const std::string& kv_type,
-      const bool dump_intermediate_outputs);
-
-  ~Runner() {
-    if (debug_buffer_) {
-      free(debug_buffer_);
-    }
-  }
+      const std::string& kv_type);
 
   struct Stats {
     // Scaling factor for timestamps - in this case, we use ms.
@@ -79,15 +72,30 @@ class Runner {
     int64_t num_generated_tokens;
   };
 
-  bool is_loaded() const;
-  executorch::runtime::Error load();
+  bool is_loaded() const override;
+  executorch::runtime::Error load() override;
   executorch::runtime::Error generate(
       int32_t seq_len,
       const std::string& prompt,
       const std::string& system_prompt,
       std::function<void(const std::string&)> token_callback = {},
       std::function<void(const Stats&)> stats_callback = {});
-  void stop();
+  executorch::runtime::Error generate(
+      const std::string& prompt,
+      int32_t seq_len,
+      std::function<void(const std::string&)> token_callback = {},
+      std::function<void(const executorch::extension::llm::Stats&)>
+          stats_callback = {},
+      bool echo = true,
+      bool warming = false) override {
+    // TODO: convert stats_callback
+    return generate(
+        seq_len,
+        prompt,
+        "",
+        token_callback);
+  }
+  void stop() override;
   std::vector<executorch::runtime::Result<executorch::runtime::MethodMeta>>
   get_methods_meta(std::string& method_name);
 
@@ -134,9 +142,6 @@ class Runner {
   LlamaVersion llama_version_;
   std::string kv_updater_;
   std::string kv_type_;
-  bool dump_intermediate_outputs_{false};
-  std::shared_ptr<executorch::etdump::ETDumpGen> etdump_gen_;
-  void* debug_buffer_{nullptr};
 };
 
 } // namespace example
