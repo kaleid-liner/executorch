@@ -67,7 +67,8 @@ class QnnBackendFactory {
       const QnnImplementation& implementation,
       QnnLogger* logger,
       const QnnExecuTorchContextBinary& qnn_context_blob,
-      const QnnExecuTorchOptions* options);
+      const QnnExecuTorchOptions* options,
+      std::unique_ptr<QnnBackend>&& backend_ptr);
 };
 } // namespace qnn
 } // namespace backends

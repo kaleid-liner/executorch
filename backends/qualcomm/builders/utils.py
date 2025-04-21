@@ -192,15 +192,15 @@ def hvx_preprocess_weights_gptq(
     vec_c: int = 32,
 ) -> Tuple[np.ndarray, np.ndarray]:
 
-    assert(w.dtype == "uint8")
-    assert(scales.dtype == "float16" or scales.dtype == "float32" or scales.dtype == "bfloat16")
+    assert w.dtype == "uint8"
+    assert scales.dtype == "float16" or scales.dtype == "float32" or scales.dtype == "bfloat16"
     if scales.dtype != "float16":
         scales = scales.astype("float16")
         zeros = zeros.astype("float16") if zeros is not None else None
     # 4 = sizeof(int32/float) / sizeof(uint8)
-    assert(vec_p // 4 == vec_c)
-
+    assert vec_p // 4 == vec_c
     M, K = w.shape
+    assert M >= vec_p, f"out features {M} should be larger than vec_p {vec_p}"
 
     P = M * bits
     Q = K // g

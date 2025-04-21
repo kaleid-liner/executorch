@@ -1138,6 +1138,13 @@ def annotate_where(node: Node, quantization_config: QuantizationConfig) -> None:
     _mark_nodes_as_annotated([node])
 
 
+@register_annotator([torch.ops.aten.split_with_sizes.default])
+def annotate_split_with_sizes(node: Node, quantization_config: QuantizationConfig) -> None:
+    annotate_in_out_obs_sharing_op(node, quantization_config)
+    if not _is_annotated([node]):
+        annotate_single_in_single_out(node, quantization_config)
+
+
 try:
     from executorch.backends.qualcomm.builders.custom_ops import tman_linear
     @register_annotator([torch.ops.tman.linear.default])

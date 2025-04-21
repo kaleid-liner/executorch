@@ -59,10 +59,10 @@ def write_model(model_path, model_size, output_base_path):
         {"role": "system", "content": "You are a helpful and harmless assistant. You should think step-by-step."},
         {"role": "user", "content": "How can I design a data structure in C++ to store the top 5 largest integer numbers?"},
     ]
-    input_tensor = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
-    outputs = model.generate(input_ids=input_tensor.to(model.device), max_new_tokens=32)
-    result = tokenizer.decode(outputs[0][input_tensor.shape[1]:], skip_special_tokens=True)
-    print(result)
+    # input_tensor = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
+    # outputs = model.generate(input_ids=input_tensor.to(model.device), max_new_tokens=32)
+    # result = tokenizer.decode(outputs[0][input_tensor.shape[1]:], skip_special_tokens=True)
+    # print(result)
 
     loaded = model.model.state_dict()
 

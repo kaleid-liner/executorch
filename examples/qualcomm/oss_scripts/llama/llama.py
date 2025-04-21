@@ -587,15 +587,20 @@ def compile(args, pte_filename, tokenizer):
     for llama_instance in llama_instance_list:
         for layer in llama_instance.layers:
             if args.gptq_dir:
-                convert_qlinear_to_linear(layer.attention)
-                convert_qlinear_to_tman_linear(layer.feed_forward)
-                # convert_qlinear_to_linear(layer.feed_forward)
-                layer.attention.wq.weight.data.copy_(permute(layer.attention.wq.weight, kv_config.n_heads, kv_config.n_heads))
-                layer.attention.wk.weight.data.copy_(permute(layer.attention.wk.weight, kv_config.n_heads, kv_config.n_kv_heads))
-            if getattr(layer.attention, "prepare_sha", None):
-                layer.attention.prepare_sha()
-            # if getattr(layer.feed_forward, "prepare_feedfoward_conv", None):
-            #     layer.feed_forward.prepare_feedfoward_conv()
+                # TODO: optimize the performance when needed
+                if args.use_tman:
+                    if getattr(layer.attention, "prepare_tman", None):
+                        layer.attention.prepare_tman(do_permute=True, use_sha=False)
+                    convert_qlinear_to_tman_linear(layer.feed_forward)
+                else:
+                    convert_qlinear_to_linear(layer.attention)
+                    layer.attention.wq.weight.data.copy_(permute(layer.attention.wq.weight, kv_config.n_heads, kv_config.n_heads))
+                    layer.attention.wk.weight.data.copy_(permute(layer.attention.wk.weight, kv_config.n_heads, kv_config.n_kv_heads))
+                    if getattr(layer.attention, "prepare_sha", None):
+                        layer.attention.prepare_sha()
+                    convert_qlinear_to_linear(layer.feed_forward)
+                    if getattr(layer.feed_forward, "prepare_feedfoward_conv", None):
+                        layer.feed_forward.prepare_feedfoward_conv()
 
     use_fp16 = True
     fixed_point_type = {"kv_type": torch.float32, "io_type": torch.float32}
@@ -1106,6 +1111,12 @@ def _build_parser():
         default=None,
         type=str,
         help="Path to the GPTQ model dir, which should contain config.json or quantize_config.json.",
+    )
+
+    parser.add_argument(
+        "--use_tman",
+        action="store_true",
+        help="Use TMANLinear instead of QNNConv2d.",
     )
 
     parser.add_argument("-v", "--verbose", action="store_true")

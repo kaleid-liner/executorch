@@ -24,6 +24,48 @@ namespace executorch {
 namespace backends {
 namespace qnn {
 
+namespace {
+// TODO: [ERROR] [Qnn ExecuTorch]: tcm_migration.cc:174:ERROR:Memory properties specified twice for operator ::TMANLinear
+//       The root cause of this error is that when QNN backend is freed, the memory properties of custom ops are not cleared,
+//       which will cause the error when the QNN backend is loaded and custom ops are registered again.
+//       This is a bug in QNN SDK, related to DEF_TENSOR_PROPERTIES / hnnx::register_tensor_properties.
+//       Workaround: prevent the QNN backend from being freed.
+class GlobalBackend {
+public:
+  QnnImplementation implementation_;
+  QnnLogger* logger_;
+  QnnBackend* backend_;
+
+  static GlobalBackend& GetInstance() {
+    static GlobalBackend instance;
+    return instance;
+  }
+  ~GlobalBackend() {
+    if (backend_) {
+      delete backend_;
+      backend_ = nullptr;
+    }
+    if (logger_) {
+      delete logger_;
+      logger_ = nullptr;
+    }
+  }
+private:
+  GlobalBackend()
+      : implementation_("libQnnHtp.so") {
+    implementation_.Load(nullptr);
+    logger_ = new QnnLogger(
+        implementation_, LoggingCallback, QnnExecuTorchLogLevel::kLogLevelWarn);
+    backend_ = new HtpBackend(implementation_, logger_);
+    Error error = backend_->Configure();
+    if (error != Error::Ok) {
+      QNN_EXECUTORCH_LOG_ERROR(
+          "Failed to configure backend. Error code: %d", error);
+    }
+  };
+};
+}
+
 using executorch::runtime::Error;
 
 bool CompareExportedInput(
@@ -37,9 +79,15 @@ bool CompareExportedInput(
 }
 
 QnnManager::~QnnManager() {
+  if (backend_params_ptr_->qnn_backend_ptr_ != nullptr) {
+    GlobalBackend::GetInstance().backend_ = backend_params_ptr_->qnn_backend_ptr_.release();
+  }
   backend_params_ptr_.reset(new BackendConfigParameters());
-  logger_.reset();
-  qnn_loaded_backend_.TerminateAllBackends();
+  // logger_.reset();
+  if (logger_ != nullptr) {
+    GlobalBackend::GetInstance().logger_ = logger_.release();
+  }
+  // qnn_loaded_backend_.TerminateAllBackends();
 }
 
 QnnManager::QnnManager(
@@ -94,7 +142,8 @@ QnnManager::QnnManager(
         break;
     }
   }
-  qnn_loaded_backend_ = QnnImplementation(library_path);
+  // qnn_loaded_backend_ = QnnImplementation(library_path);
+  qnn_loaded_backend_ = GlobalBackend::GetInstance().implementation_;
   backend_params_ptr_ = std::make_unique<BackendConfigParameters>();
 }
 
@@ -290,8 +339,9 @@ Error QnnManager::RegisterCustomMem(
 Error QnnManager::Init() {
   ET_CHECK_OR_RETURN_ERROR(
       LoadQnnLibrary() == Error::Ok, Internal, "Fail to load Qnn library");
-  logger_ = std::make_unique<QnnLogger>(
-      qnn_loaded_backend_, LoggingCallback, options_->log_level());
+  // logger_ = std::make_unique<QnnLogger>(
+  //     qnn_loaded_backend_, LoggingCallback, options_->log_level());
+  logger_ = std::unique_ptr<QnnLogger>(GlobalBackend::GetInstance().logger_);
   if (backend_params_ptr_->backend_init_state_ ==
       BackendInitializeState::UNINITIALIZED) {
     QNN_EXECUTORCH_LOG_INFO(
@@ -299,7 +349,8 @@ Error QnnManager::Init() {
         "parameters for Qnn executorch backend type %d",
         options_->backend_options()->backend_type());
     backend_params_ptr_ = QnnBackendFactory().Create(
-        qnn_loaded_backend_, logger_.get(), qnn_context_blob_, options_);
+        qnn_loaded_backend_, logger_.get(), qnn_context_blob_, options_,
+        std::unique_ptr<QnnBackend>(GlobalBackend::GetInstance().backend_));
     ET_CHECK_OR_RETURN_ERROR(
         backend_params_ptr_ != nullptr,
         Internal,
@@ -308,10 +359,10 @@ Error QnnManager::Init() {
         backend_params_ptr_->qnn_backend_cache_ptr_->Configure() == Error::Ok,
         Internal,
         "Fail to configure Qnn backend cache");
-    ET_CHECK_OR_RETURN_ERROR(
-        backend_params_ptr_->qnn_backend_ptr_->Configure() == Error::Ok,
-        Internal,
-        "Fail to configure Qnn backend");
+    // ET_CHECK_OR_RETURN_ERROR(
+    //     backend_params_ptr_->qnn_backend_ptr_->Configure() == Error::Ok,
+    //     Internal,
+    //     "Fail to configure Qnn backend");
     ET_CHECK_OR_RETURN_ERROR(
         backend_params_ptr_->qnn_device_ptr_->Configure() == Error::Ok,
         Internal,
@@ -458,10 +509,15 @@ Error QnnManager::ProfileExecuteData(
 
 void QnnManager::Destroy() {
   QNN_EXECUTORCH_LOG_INFO("Destroy Qnn backend parameters");
+  if (backend_params_ptr_->qnn_backend_ptr_ != nullptr) {
+    GlobalBackend::GetInstance().backend_ = backend_params_ptr_->qnn_backend_ptr_.release();
+  }
   backend_params_ptr_.reset(new BackendConfigParameters());
-  logger_.reset();
+  if (logger_ != nullptr) {
+    GlobalBackend::GetInstance().logger_ = logger_.release();
+  }
 
-  qnn_loaded_backend_.TerminateAllBackends();
+  // qnn_loaded_backend_.TerminateAllBackends();
 }
 
 bool QnnManager::IsNodeSupportedByBackend(
