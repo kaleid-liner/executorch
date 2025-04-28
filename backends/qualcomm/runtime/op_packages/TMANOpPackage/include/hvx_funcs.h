@@ -299,7 +299,8 @@ template <typename LType = int16_t,
           bool ZeroPoint = false,
           int Bits = 2,
           int TileK = 256,
-          int g = 4>
+          int g = 4,
+          bool WeightsInVTCM = false>
 inline typename std::enable_if_t<std::is_same<LType, int16_t>::value && std::is_same<XType, __fp16>::value && std::is_same<CType, float>::value, int>
 hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float *ls, const float *lb, const uint8_t *w, const XType *s, CType *c)
 {
@@ -344,7 +345,7 @@ hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float
   // Step.1: TABLE TOOKUP
   HVX_Vector lvec_arr[TileQ / VecQ];
 
-  memset(c, 0, sizeof(CType) * P);
+  memset(c, 0, sizeof(CType) * TileP);
 
   for (int32_t tile_q = 0; tile_q < Q; tile_q += TileQ)
   {
@@ -365,7 +366,9 @@ hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float
     const uint8_t *w_tile_base = w + tile_q * TileP * g / 8;
     const XType   *s_tile_base = s + (tile_q / q_group_size) * (TileP / Bits) * (1 + ZeroPoint);
 
-    l2fetch(s_tile_base + s_l2fetch_one, VLEN, VLEN, (s_l2fetch_size - s_l2fetch_one) * sizeof(XType) / VLEN, 0);
+    if (!WeightsInVTCM) {
+      l2fetch(s_tile_base + s_l2fetch_one, VLEN, VLEN, (s_l2fetch_size - s_l2fetch_one) * sizeof(XType) / VLEN, 0);
+    }
 
     if (tile_q + TileQ < VecQ)
     {
@@ -398,12 +401,15 @@ hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float
 
       const uint8_t *w_base = w_tile_base + vec_p * TileQ * g / 8;
       const XType   *s_base = s_tile_base + vec_p / (VecP * Bits) * (TileQ / q_group_size) * VecP * (1 + ZeroPoint);
-      if (vec_p + VecP < TileP)
+      if (!WeightsInVTCM)
       {
-        l2fetch(w_base + VecP * TileQ * g / 8, VecP, VecP, TileQ * g / 8, 0);
-        if (vec_p % s_l2fetch_p == 0)
+        if (vec_p + VecP < TileP)
         {
-          l2fetch(s_base + s_l2fetch_size, VLEN, VLEN, s_l2fetch_size * sizeof(XType) / VLEN, 0);
+          l2fetch(w_base + VecP * TileQ * g / 8, VecP, VecP, TileQ * g / 8, 0);
+          if (vec_p % s_l2fetch_p == 0)
+          {
+            l2fetch(s_base + s_l2fetch_size, VLEN, VLEN, s_l2fetch_size * sizeof(XType) / VLEN, 0);
+          }
         }
       }
 

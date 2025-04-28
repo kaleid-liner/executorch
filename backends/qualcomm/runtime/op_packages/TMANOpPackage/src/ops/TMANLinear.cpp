@@ -11,6 +11,27 @@
 
 #include "hvx_funcs.h"
 
+#ifndef PREPARE_DISABLED
+API_EXPORT QuickShape simpledim_chunk1_4d_split_start(Replacement &rpx, Split_Context const &splitinfo, OpRef const &orig, int dim)
+{
+  size_t dims[4] = { 0, 0, 0, 0 };
+  dims[dim] = splitinfo.start / splitinfo.size;
+  return QuickShape(dims[0], dims[1], dims[2], dims[3]);
+}
+
+API_EXPORT QuickShape simpledim_chunk1_4d_split_size(Replacement &rpx, Split_Context const &splitinfo, OpRef const &orig, int dim)
+{
+  size_t dims[4] = {
+    orig.dim(rpx.graph(), 0),
+    orig.dim(rpx.graph(), 1),
+    orig.dim(rpx.graph(), 2),
+    orig.dim(rpx.graph(), 3)
+  };
+  dims[dim] = 1;
+  return QuickShape(dims[0], dims[1], dims[2], dims[3]);
+}
+#endif
+
 BEGIN_PKG_OP_DEFINITION(PKG_TMANLinear);
 
 static Qnn_Scalar_t sg_opDefaultGroup_SizeScalar = {.dataType = Qnn_DataType_t::QNN_DATATYPE_INT_32,
@@ -39,10 +60,26 @@ static float tmanlinearCostFunc(const Op *op);
 
 DEF_PACKAGE_OP((tmanlinearImpl<Tensor>), "TMANLinear")
 
-DEF_TENSOR_PROPERTIES(Op("TMANLinear", "l", "qweight", "scales", "group_size", "bits", "symmetric"),
-                      Flat("*", "l", "qweight", "scales"),
-                      MainMemory("qweight", "scales", "group_size", "bits", "symmetric"),
-                      Tcm("*", "l"))
+DEF_TENSOR_PROPERTIES(
+  Op("TMANLinear", "l", "qweight", "scales", "group_size", "bits", "symmetric"),
+  Flat("*", "l", "qweight", "scales"),
+  MainMemory("group_size", "bits", "symmetric"),
+  Tcm("*", "l", "qweight", "scales"))
+
+DEF_PACKAGE_OPTIMIZATION(
+  EARLY,
+  Op("TMANLinear", "l", "qweight", "scales", "group_size", "bits", "symmetric"),
+  GT(DIM_OF("qweight", 2), 1),
+  AUTOSPLIT(3, "I", DIV(DIM_OF("*", 3), DIM_OF("qweight", 2)),
+    Op(
+      "TMANLinear", "l",
+      AUTOSPLIT_SLICE("qweight",
+        AUTOSPLIT_SHAPEFN_APPLY(simpledim_chunk1_4d_split_start, "I", "qweight", 2),
+        AUTOSPLIT_SHAPEFN_APPLY(simpledim_chunk1_4d_split_size, "I", "qweight", 2)),
+      AUTOSPLIT_SLICE("scales",
+        AUTOSPLIT_SHAPEFN_APPLY(simpledim_chunk1_4d_split_start, "I", "scales", 2),
+        AUTOSPLIT_SHAPEFN_APPLY(simpledim_chunk1_4d_split_size, "I", "scales", 2)),
+      "group_size", "bits", "symmetric")))
 
 DEF_PACKAGE_PARAM_ORDER("TMANLinear",
                         "group_size",
@@ -78,14 +115,13 @@ GraphStatus tmanlinearImpl(TensorType& c,
   const bool zero_point    = ((const int32_t*)t_symmetric.raw_data_const())[0] == 0;
 
   const int32_t gemm_n = c.dims()[2];
-  const int32_t gemm_m = qweight.dims()[2];
+  const int32_t gemm_m = c.dims()[3] / sizeof(float) / bits;
   const int32_t gemm_k = qweight.dims()[2] * qweight.dims()[3] * 32 / bits / gemm_m;
 
   const int32_t l_size  = gemm_k / LUT_G * LUT_SIZE;
   const int32_t ls_size = (ACT_GROUP_SIZE == -1) ? 1 : (gemm_k / ACT_GROUP_SIZE);
 
-  const XType* x_buf  = (const XType*)l.raw_data_const();
-  const LType* l_ptr  = (const LType*)(x_buf + gemm_k * gemm_n);
+  const LType* l_ptr  = (const LType*)l.raw_data_const();
   const float* ls_ptr = (const float*)(l_ptr + l_size);
   const float* lb_ptr = ls_ptr + ls_size;
 
@@ -95,19 +131,19 @@ GraphStatus tmanlinearImpl(TensorType& c,
 
   if (zero_point && bits == 2 && group_size == 64)  // w2g64, symmetric=False
   {
-    hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 64, true, 2, TILE_K, LUT_G>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
+    hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 64, true, 2, TILE_K, LUT_G, true>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
   }
   else if (!zero_point && bits == 4 && group_size == 128)  // w4g128, symmetric=True
   {
-    hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 128, false, 4, TILE_K, LUT_G>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
+    hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 128, false, 4, TILE_K, LUT_G, true>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
   }
   else if (zero_point && bits == 4 && group_size == 128)  // w4g128, symmetric=False
   {
-    hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 128, true, 4, TILE_K, LUT_G>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
+    hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 128, true, 4, TILE_K, LUT_G, true>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
   }
   else if (zero_point && bits == 4 && group_size == 64)  // w4g64, symmetric=False
   {
-    hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 64, true, 4, TILE_K, LUT_G>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
+    hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 64, true, 4, TILE_K, LUT_G, true>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
   }
   else
   {

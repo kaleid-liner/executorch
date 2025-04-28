@@ -365,18 +365,18 @@ Error Runner::generate(
       prompt_.append(prompt);
       break;
     case LlamaVersion::kLlama3:
-      // if (!system_prompt.empty()) {
-      //   prompt_.append("<|start_header_id|>system<|end_header_id|>\n\n");
-      //   prompt_.append(system_prompt);
-      //   prompt_.append("<|eot_id|>");
-      // }
-      // prompt_.append("<|start_header_id|>user<|end_header_id|>\n\n");
+      if (!system_prompt.empty()) {
+        prompt_.append("<|start_header_id|>system<|end_header_id|>\n\n");
+        prompt_.append(system_prompt);
+        prompt_.append("<|eot_id|>");
+      }
+      prompt_.append("<|start_header_id|>user<|end_header_id|>\n\n");
       prompt_.append(prompt);
-      // prompt_.append(
-      //     "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n");
-      // if (token_callback) {
-      //   token_callback("<|begin_of_text|>");
-      // }
+      prompt_.append(
+          "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n");
+      if (token_callback) {
+        token_callback("<|begin_of_text|>");
+      }
       break;
     default:
       ET_CHECK_MSG(false, "unsupported llama version");
@@ -584,7 +584,7 @@ std::string statsToJsonString(const Runner::Stats& stats) {
      << "\"inference_end_ms\":" << stats.inference_end_ms << ","
      << "\"prompt_eval_end_ms\":" << stats.prompt_eval_end_ms << ","
      << "\"first_token_ms\":" << stats.first_token_ms << ","
-     << "\"tokens_per_second\":" << stats.num_generated_tokens * 1000 / (stats.inference_end_ms - stats.prompt_eval_end_ms) << ","
+     << "\"tokens_per_second\":" << (double)stats.num_generated_tokens * 1000 / (stats.inference_end_ms - stats.prompt_eval_end_ms) << ","
      << "\"aggregate_sampling_time_ms\":" << stats.aggregate_sampling_time_ms
      << "," << "\"SCALING_FACTOR_UNITS_PER_SECOND\":"
      << stats.SCALING_FACTOR_UNITS_PER_SECOND << "}";

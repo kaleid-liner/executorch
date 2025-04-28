@@ -228,8 +228,8 @@ def hvx_preprocess_weights_gptq(
     w = w.reshape(-1, vec_q, vec_p).reshape(-1, vec_q // 2, 2, vec_p).transpose(0, 1, 3, 2)
     w = sum([(w[:, :, :, n] << (n * g)) for n in range(2)])
     w = w.reshape(P // tile_p, Q // tile_q, tile_p // vec_p, tile_q // vec_q, vec_q // 2, vec_p)
-    # Reshape for easy shape inference
-    w = np.ascontiguousarray(w).view(np.int32).reshape(M, -1)
+    # Reshape for easy tiling
+    w = np.ascontiguousarray(w).view(np.int32).reshape(P // tile_p, -1)
 
     if scales.size >= M:
         group_size = K // scales.shape[1]
@@ -248,7 +248,7 @@ def hvx_preprocess_weights_gptq(
             # = (c * ls + (z * 2 + 1) * lb) * s
             zeros = zeros * 2 + 1
             scales = np.stack([scales, zeros], axis=-2)
-        scales = scales.view(np.int32).reshape(1, -1)
+        scales = scales.view(np.int32).reshape(P // tile_p, -1)
     else:
         # TODO: support BitNet and rename the function
         if zeros is not None:

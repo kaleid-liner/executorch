@@ -76,49 +76,22 @@ GraphStatus tmanprecomputeImpl(TensorType& l,
   const int32_t l_size  = gemm_k / LUT_G * LUT_SIZE;
   const int32_t ls_size = (ACT_GROUP_SIZE == -1) ? 1 : (gemm_k / ACT_GROUP_SIZE);
 
-  XType* x_buf  = (XType*)l.raw_data();
-  LType* l_ptr  = (LType*)(x_buf + gemm_k * gemm_n);
+  const XType* x_ptr = (const XType*)x.raw_data_const();
+  LType* l_ptr = (LType*)l.raw_data();
   float* ls_ptr = (float*)(l_ptr + l_size);
   float* lb_ptr = ls_ptr + ls_size;
 
-  const XType* x_ptr = (const XType*)x.raw_data_const();
-
-  if (x.get_dtype() == DType::QUInt16)
-  {
-    const float x_scale = x.get_interface_scale();
-    const int x_offset   = x.get_interface_offset();
-
-    HVX_Vector x_offset_vec = Q6_V_vsplat_R(x_offset);
-    HVX_Vector x_scale_vec  = Q6_V_vsplat_R(_fp32_to_bits(x_scale));
-    for (int32_t i = 0; i < gemm_k * gemm_n; i += VLEN / sizeof(uint16_t))
-    {
-      HVX_Vector x_vec = vmem(x_ptr + i);
-      HVX_VectorPair x_vec_pair = Q6_Wuw_vzxt_Vuh(x_vec);
-      HVX_Vector x_vec_lo = Q6_V_lo_W(x_vec_pair);
-      HVX_Vector x_vec_hi = Q6_V_hi_W(x_vec_pair);
-      x_vec_lo = Q6_Vw_vsub_VwVw(x_vec_lo, x_offset_vec);
-      x_vec_hi = Q6_Vw_vsub_VwVw(x_vec_hi, x_offset_vec);
-      x_vec_lo = Q6_Vsf_equals_Vw(x_vec_lo);
-      x_vec_hi = Q6_Vsf_equals_Vw(x_vec_hi);
-      x_vec_lo = Q6_Vqf32_vmpy_VsfVsf(x_vec_lo, x_scale_vec);
-      x_vec_hi = Q6_Vqf32_vmpy_VsfVsf(x_vec_hi, x_scale_vec);
-      x_vec = Q6_Vhf_equals_Vqf16(x_vec);
-      x_vec = Q6_Vhf_equals_Wqf32(Q6_W_vcombine_VV(x_vec_hi, x_vec_lo));
-      vmem(x_buf + i) = x_vec;
-    }
-  }
-
   if (zero_point && group_size == 64)  // w2g64, symmetric=False
   {
-    hvx_lut_ctor<LType, XType, ACT_GROUP_SIZE, 64, true, LUT_G>(gemm_k, gemm_n, x_buf, l_ptr, ls_ptr, lb_ptr);
+    hvx_lut_ctor<LType, XType, ACT_GROUP_SIZE, 64, true, LUT_G>(gemm_k, gemm_n, x_ptr, l_ptr, ls_ptr, lb_ptr);
   }
   else if (!zero_point && group_size == 128)  // w4g128, symmetric=True
   {
-    hvx_lut_ctor<LType, XType, ACT_GROUP_SIZE, 128, false, LUT_G>(gemm_k, gemm_n, x_buf, l_ptr, ls_ptr, lb_ptr);
+    hvx_lut_ctor<LType, XType, ACT_GROUP_SIZE, 128, false, LUT_G>(gemm_k, gemm_n, x_ptr, l_ptr, ls_ptr, lb_ptr);
   }
   else if (zero_point && group_size == 128)  // w4g128, symmetric=False
   {
-    hvx_lut_ctor<LType, XType, ACT_GROUP_SIZE, 128, true, LUT_G>(gemm_k, gemm_n, x_buf, l_ptr, ls_ptr, lb_ptr);
+    hvx_lut_ctor<LType, XType, ACT_GROUP_SIZE, 128, true, LUT_G>(gemm_k, gemm_n, x_ptr, l_ptr, ls_ptr, lb_ptr);
   }
   else
   {

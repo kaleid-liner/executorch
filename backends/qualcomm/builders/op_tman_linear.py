@@ -12,15 +12,22 @@ import numpy as np
 import torch
 from executorch.backends.qualcomm.utils.constants import QCOM_DATA, QCOM_QUANT_ATTRS
 from executorch.backends.qualcomm.builders.utils import unpack_gptqv2, hvx_preprocess_weights_gptq
+import logging
 
 from .node_visitor import NodeVisitor, register_node_visitor
 from .qnn_constants import (
     OpTMANLinear,
     OpTMANPrecompute,
     OpTMANFinalize,
+    OpConvert,
     QNN_OP_PACKAGE_NAME_TMAN,
+    QNN_OP_PACKAGE_NAME_QTI_AISW,
 )
 from .utils import get_parameter
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 def _get_c_size(
@@ -35,12 +42,13 @@ def _get_c_size(
 def _get_l_size(
     k: int,
     group_size: int,
+    need_dequant: bool = True,
 ) -> int:
     LUT_G = 4
     LUT_SIZE = 16
     ACT_GROUP_SIZE = 256
     # float16
-    x_size = k
+    x_size = k if need_dequant else 0
     # int16
     l_size = k // LUT_G * LUT_SIZE
     # float32
@@ -50,12 +58,36 @@ def _get_l_size(
     return x_size * 2 + l_size * 2 + ls_size * 4 + lb_size * 4
 
 
+def _decide_tile_size(
+    dim_size: int,
+    total_size: int,
+    vtcm_size_in_mb: int = 8,
+    n_threads: int = 4,
+    divider: int = 2,
+) -> int:
+    max_tile_size = vtcm_size_in_mb * 1024 * 1024 // n_threads
+    res = dim_size
+    success = False
+    for s in range(dim_size // divider, 0, -1):
+        chunk_size = s * divider
+        if dim_size % chunk_size != 0:
+            continue
+        res = chunk_size
+        if total_size // dim_size * res < max_tile_size:
+            success = True
+            break
+    if not success:
+        logger.warning(f"Can't find optimal tile size that is multiple of {divider} and fits in VTCM, use {res} as workaround")
+    return res
+
+
 @register_node_visitor
 class TMANLinear(NodeVisitor):
     target = ["tman.linear.default"]
 
     def __init__(self, *args) -> None:
         super().__init__(*args)
+        self.add_convert = True
 
     def define_node(
         self,
@@ -108,7 +140,11 @@ class TMANLinear(NodeVisitor):
             f"TMANLinear: bits/group_size/symmetric mismatch, {ref_bits}/{ref_group_size}/{ref_symmetric} != {bits}/{group_size}/{symmetric}"
         )
         zeros_repacked = zeros_repacked if not symmetric else None
-        qweight_repacked, scales_repacked = hvx_preprocess_weights_gptq(qweight_repacked, scales_repacked, zeros_repacked, bits, tile_p=m*bits)
+        total_size = qweight_repacked.nbytes + scales_repacked.nbytes + (zeros_repacked.nbytes if zeros_repacked is not None else 0)
+        vec_p = 128
+        tile_p = _decide_tile_size(m*bits, total_size, divider=bits*vec_p)
+        qweight_repacked, scales_repacked = hvx_preprocess_weights_gptq(qweight_repacked, scales_repacked, zeros_repacked, bits, tile_p=tile_p, vec_p=vec_p)
+        logger.info(f"TMANLinear: m={m}, k={k}, bits={bits}, tile_p={tile_p}, qweight({qweight_repacked.shape}))")
 
         qweight_tensor_wrapper = self.define_tensor(
             qweight_node,
@@ -137,7 +173,7 @@ class TMANLinear(NodeVisitor):
             dtype=PyQnnWrapper.Qnn_DataType_t.QNN_DATATYPE_UINT_8,
             quant_encoding=no_quant_encoding,
             quant_configs=no_quant_configs,
-            dims=torch.Size((1, _get_l_size(k, group_size))),
+            dims=torch.Size((1, _get_l_size(k, group_size, not self.add_convert))),
             tensor=None,  # Unused when is_fake_tensor is True
             is_fake_tensor=True,
             nodes_to_wrappers=nodes_to_wrappers,
@@ -153,6 +189,48 @@ class TMANLinear(NodeVisitor):
             is_fake_tensor=True,
             nodes_to_wrappers=nodes_to_wrappers,
         )
+
+        if self.add_convert:
+            intermediate_input_tensor_wrapper = self.define_custom_tensor_wrapper(
+                node_name=node.name + "_input_converted",
+                tensor_type=PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
+                dtype=PyQnnWrapper.Qnn_DataType_t.QNN_DATATYPE_FLOAT_16,
+                quant_encoding=no_quant_encoding,
+                quant_configs=no_quant_configs,
+                dims=input_tensor.size(),
+                tensor=None,
+                is_fake_tensor=True,
+                nodes_to_wrappers=nodes_to_wrappers,
+            )
+            intermediate_output_tensor_wrapper = self.define_custom_tensor_wrapper(
+                node_name=node.name + "_output_converted",
+                tensor_type=PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
+                dtype=PyQnnWrapper.Qnn_DataType_t.QNN_DATATYPE_FLOAT_16,
+                quant_encoding=no_quant_encoding,
+                quant_configs=no_quant_configs,
+                dims=output_tensor.size(),
+                tensor=None,
+                is_fake_tensor=True,
+                nodes_to_wrappers=nodes_to_wrappers,
+            )
+            input_convert_op = PyQnnWrapper.PyQnnOpWrapper(
+                node.name + "_input_convert",
+                QNN_OP_PACKAGE_NAME_QTI_AISW,
+                OpConvert.op_name,
+            )
+            input_convert_op.AddInputTensors([input_tensor_wrapper])
+            input_convert_op.AddOutputTensors([intermediate_input_tensor_wrapper])
+
+            output_convert_op = PyQnnWrapper.PyQnnOpWrapper(
+                node.name + "_output_convert",
+                QNN_OP_PACKAGE_NAME_QTI_AISW,
+                OpConvert.op_name,
+            )
+            output_convert_op.AddInputTensors([intermediate_output_tensor_wrapper])
+            output_convert_op.AddOutputTensors([output_tensor_wrapper])
+
+            input_tensor_wrapper = intermediate_input_tensor_wrapper
+            output_tensor_wrapper = intermediate_output_tensor_wrapper
 
         precompute_op = PyQnnWrapper.PyQnnOpWrapper(
             node.name + "_precompute",
@@ -223,4 +301,6 @@ class TMANLinear(NodeVisitor):
             {QCOM_DATA: np.int32(symmetric)},
         )
 
+        if self.add_convert:
+            return [input_convert_op, precompute_op, linear_op, finalize_op, output_convert_op]
         return [precompute_op, linear_op, finalize_op]

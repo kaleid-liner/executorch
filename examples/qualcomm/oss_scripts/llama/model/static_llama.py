@@ -199,6 +199,7 @@ class LlamaAttention(nn.Module):
         assert(isinstance(self.wq, TorchQuantLinear))
         assert(isinstance(self.wk, TorchQuantLinear))
         assert(isinstance(self.wv, TorchQuantLinear))
+        assert(isinstance(self.wo, TorchQuantLinear))
         self.wq.post_init()
         self.wk.post_init()
         self.wv.post_init()
