@@ -62,7 +62,7 @@ def _decide_tile_size(
     dim_size: int,
     total_size: int,
     vtcm_size_in_mb: int = 8,
-    n_threads: int = 4,
+    n_threads: int = 6,
     divider: int = 2,
 ) -> int:
     max_tile_size = vtcm_size_in_mb * 1024 * 1024 // n_threads
@@ -140,7 +140,7 @@ class TMANLinear(NodeVisitor):
             f"TMANLinear: bits/group_size/symmetric mismatch, {ref_bits}/{ref_group_size}/{ref_symmetric} != {bits}/{group_size}/{symmetric}"
         )
         zeros_repacked = zeros_repacked if not symmetric else None
-        total_size = qweight_repacked.nbytes + scales_repacked.nbytes + (zeros_repacked.nbytes if zeros_repacked is not None else 0)
+        total_size = qweight_repacked.nbytes + (scales_repacked.size + (zeros_repacked.size if zeros_repacked is not None else 0)) * np.float16.itemsize
         vec_p = 128
         tile_p = _decide_tile_size(m*bits, total_size, divider=bits*vec_p)
         qweight_repacked, scales_repacked = hvx_preprocess_weights_gptq(qweight_repacked, scales_repacked, zeros_repacked, bits, tile_p=tile_p, vec_p=vec_p)
