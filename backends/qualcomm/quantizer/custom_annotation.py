@@ -197,7 +197,10 @@ def annotate_matmul_16a8w(gm: torch.fx.GraphModule) -> None:  # noqa: C901
                     node, quantization_config=quantization_config_8a4w_per_channel
                 )
                 break
-            elif node.target == torch.ops.tman.linear.default:
+            elif node.target in [
+                torch.ops.tman.linear.default,
+                torch.ops.tman.bitnet_linear.default,
+            ]:
                 # TODO: tman::linear currently does not support 8a
                 break
             elif node.target in [torch.ops.aten.add.Tensor, torch.ops.aten.sub.Tensor]:

@@ -123,7 +123,7 @@ GraphStatus tmanlinearImpl(TensorType& c,
 
   const LType* l_ptr  = (const LType*)l.raw_data_const();
   const float* ls_ptr = (const float*)(l_ptr + l_size);
-  const float* lb_ptr = ls_ptr + ls_size;
+  const float* lb_ptr = ls_ptr + MAX(ls_size, 128 / sizeof(float));
 
   const uint8_t* w_ptr = (const uint8_t*)qweight.raw_data_const();
   const XType* s_ptr   = (const XType*)scales.raw_data_const();
@@ -144,6 +144,10 @@ GraphStatus tmanlinearImpl(TensorType& c,
   else if (zero_point && bits == 4 && group_size == 64)  // w4g64, symmetric=False
   {
     hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 64, true, 4, TILE_K, LUT_G, true>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
+  }
+  else if (!zero_point && bits == 2 && group_size == -1)  // bitnet
+  {
+    hvx_tbl<LType, XType, CType, -1, -1, false, 4, TILE_K, LUT_G, true>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
   }
   else
   {

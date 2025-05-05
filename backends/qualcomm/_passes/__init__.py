@@ -23,6 +23,7 @@ from .remove_redundancy import RemoveRedundancy
 from .replace_index_put_input import ReplaceIndexPutInput
 from .replace_inf_buffer import ReplaceInfBuffer
 from .tensor_i64_to_i32 import TensorI64toI32
+from .convert_square_to_pow import ConvertSquareToPow
 
 
 __all__ = [
@@ -51,4 +52,5 @@ __all__ = [
     ReplaceIndexPutInput,
     ReplaceInfBuffer,
     TensorI64toI32,
+    ConvertSquareToPow,
 ]

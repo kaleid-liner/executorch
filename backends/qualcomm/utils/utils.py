@@ -18,6 +18,7 @@ import executorch.backends.qualcomm.python.PyQnnManagerAdaptor as PyQnnManagerAd
 import executorch.exir as exir
 
 import torch
+import torch._export
 from executorch.backends.qualcomm._passes import (
     AnnotateDecomposed,
     AnnotateQuantAttrs,
@@ -36,6 +37,7 @@ from executorch.backends.qualcomm._passes import (
     RecomposeRmsNorm,
     RemoveRedundancy,
     ReplaceIndexPutInput,
+    ConvertSquareToPow,
 )
 from executorch.backends.qualcomm._passes.tensor_i64_to_i32 import TensorI64toI32
 from executorch.backends.qualcomm._passes.utils import (
@@ -49,7 +51,9 @@ from executorch.backends.qualcomm.builders.node_visitor import (
 from executorch.backends.qualcomm.builders.qnn_constants import OpContextLoader
 from executorch.backends.qualcomm.builders.custom_ops import (
     tman_linear,
+    tman_bitnet_linear,
 )
+from executorch.backends.qualcomm.builders.utils import unpack_weights
 from executorch.backends.qualcomm.partition.qnn_partitioner import (
     generate_qnn_executorch_option,
     QnnPartitioner,
@@ -306,6 +310,85 @@ def convert_qlinear_to_tman_linear(module: torch.nn.Module):
         return module
 
     return replace_qlinear(module)
+
+
+# https://github.com/huggingface/transformers/pull/37742
+class BitLinear(torch.nn.Module):
+    def __init__(self, in_features: int, out_features: int, bias: bool, device=None, dtype=None):
+        super().__init__()
+        self.dtype = dtype
+        self.in_features = in_features
+        self.out_features = out_features
+        VALUES_PER_ITEM = 4
+        self.register_buffer(
+            "weight",
+            torch.zeros(
+                (out_features // VALUES_PER_ITEM, in_features),
+                dtype=torch.uint8,
+                device=device,
+            ),
+        )
+        self.register_buffer(
+            "weight_scale",
+            torch.ones(
+                (1),
+                dtype=dtype,
+                device=device,
+            ),
+        )
+        if bias:
+            self.register_buffer("bias", torch.zeros((out_features), dtype=dtype, device=device))
+        else:
+            self.bias = None
+
+    def forward(self, input):
+        y = tman_bitnet_linear(input, self.weight, self.weight_scale)
+        if self.bias is not None:
+            y += self.bias.view(1, -1).expand_as(y)
+        return y
+
+
+def convert_linear_to_bitlinear(module: torch.nn.Module):
+    def replace_linear(module: torch.nn.Module):
+        attr_strs = dir(module)
+        if isinstance(module, torch.nn.ModuleList):
+            attr_strs += [str(i) for i in range(len(module))]
+
+        for attr_str in attr_strs:
+            target_attr = getattr(module, attr_str)
+            if isinstance(target_attr, torch.nn.Linear):
+                setattr(module, attr_str, BitLinear(
+                    target_attr.in_features,
+                    target_attr.out_features,
+                    target_attr.bias is not None,
+                ))
+
+        for _, sub_module in module.named_children():
+            sub_module = replace_linear(sub_module)
+        return module
+
+    return replace_linear(module)
+
+
+def convert_bitlinear_to_linear(module: torch.nn.Module):
+    def replace_bitlinear(module: torch.nn.Module):
+        attr_strs = dir(module)
+        if isinstance(module, torch.nn.ModuleList):
+            attr_strs += [str(i) for i in range(len(module))]
+
+        for attr_str in attr_strs:
+            target_attr = getattr(module, attr_str)
+            if isinstance(target_attr, BitLinear):
+                new_attr = torch.nn.Linear(target_attr.in_features, target_attr.out_features, bias=target_attr.bias is not None)
+                new_attr.weight = torch.nn.Parameter(unpack_weights(target_attr.weight, dtype=target_attr.weight_scale.dtype) * target_attr.weight_scale)
+                new_attr.bias = torch.nn.Parameter(target_attr.bias) if target_attr.bias is not None else None
+                setattr(module, attr_str, new_attr)
+
+        for _, sub_module in module.named_children():
+            sub_module = replace_bitlinear(sub_module)
+        return module
+
+    return replace_bitlinear(module)
 
 
 def convert_linear_to_conv2d(module: torch.nn.Module):
@@ -591,6 +674,8 @@ def capture_program(
     dynamic_shapes: Dict = None,
 ) -> exir.ExirExportedProgram:
     module = _preprocess_module(module, inputs)
+    module = ConvertSquareToPow()(module).graph_module
+    module = LiftConstantScalarOperands()(module).graph_module
     ep = torch.export.export(module, inputs, dynamic_shapes=dynamic_shapes)
     # torch.export.save(ep, "temp.pt2")
     # ep = torch.export.load("temp.pt2")

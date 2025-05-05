@@ -11,7 +11,7 @@ import executorch.backends.qualcomm.python.PyQnnWrapperAdaptor as PyQnnWrapper
 import numpy as np
 import torch
 from executorch.backends.qualcomm.utils.constants import QCOM_DATA, QCOM_QUANT_ATTRS
-from executorch.backends.qualcomm.builders.utils import unpack_gptqv2, hvx_preprocess_weights_gptq
+from executorch.backends.qualcomm.builders.utils import unpack_gptqv2, hvx_preprocess_weights, unpack_weights
 import logging
 
 from .node_visitor import NodeVisitor, register_node_visitor
@@ -55,7 +55,7 @@ def _get_l_size(
     ls_size = 1 if (ACT_GROUP_SIZE == -1) else (k // ACT_GROUP_SIZE)
     # float32
     lb_size = 1 if (group_size == 0) else (k // group_size)
-    return x_size * 2 + l_size * 2 + ls_size * 4 + lb_size * 4
+    return x_size * 2 + l_size * 2 + max(ls_size * 4, 128) + max(lb_size * 4, 128)
 
 
 def _decide_tile_size(
@@ -83,7 +83,7 @@ def _decide_tile_size(
 
 @register_node_visitor
 class TMANLinear(NodeVisitor):
-    target = ["tman.linear.default"]
+    target = ["tman.linear.default", "tman.bitnet_linear.default"]
 
     def __init__(self, *args) -> None:
         super().__init__(*args)
@@ -104,16 +104,42 @@ class TMANLinear(NodeVisitor):
             nodes_to_wrappers,
         )
 
-        qweight_node = node.args[1]
-        qweight_tensor = get_parameter(qweight_node, self.edge_program)
-        scales_node = node.args[2]
-        scales_tensor = get_parameter(scales_node, self.edge_program)
-        qzeros_node = node.args[3]
-        qzeros_tensor = get_parameter(qzeros_node, self.edge_program)
-        group_size = cast(int, node.args[7])
-        bits = cast(int, node.args[8])
-        symmetric = cast(bool, node.args[9])
-        gptq_v2 = cast(bool, node.args[10])
+        if node.target.__name__ == "tman.linear.default":
+            qweight_node = node.args[1]
+            qweight_tensor = get_parameter(qweight_node, self.edge_program)
+            scales_node = node.args[2]
+            scales_tensor = get_parameter(scales_node, self.edge_program)
+            qzeros_node = node.args[3]
+            qzeros_tensor = get_parameter(qzeros_node, self.edge_program)
+            group_size = cast(int, node.args[7])
+            bits = cast(int, node.args[8])
+            symmetric = cast(bool, node.args[9])
+            gptq_v2 = cast(bool, node.args[10])
+
+            qweight_repacked, scales_repacked, zeros_repacked, ref_bits, ref_group_size, ref_symmetric = unpack_gptqv2(
+                qweight_tensor.detach().numpy(),
+                scales_tensor.detach().numpy(),
+                qzeros_tensor.detach().numpy(),
+                gptq_v2,
+            )
+            assert ref_bits == bits and ref_group_size == group_size and ref_symmetric == symmetric, (
+                f"TMANLinear: bits/group_size/symmetric mismatch, {ref_bits}/{ref_group_size}/{ref_symmetric} != {bits}/{group_size}/{symmetric}"
+            )
+        elif node.target.__name__ == "tman.bitnet_linear.default":
+            qweight_node = node.args[1]
+            qweight_tensor = get_parameter(qweight_node, self.edge_program)
+            scales_node = node.args[2]
+            scales_tensor = get_parameter(scales_node, self.edge_program)
+            group_size = -1
+            bits = 2
+            symmetric = True
+
+            qweight_repacked = (unpack_weights(qweight_tensor.detach(), dtype=torch.int8) + 2).to(torch.uint8).numpy()
+            import pdb; pdb.set_trace()
+            scales_repacked = scales_tensor.detach().numpy()
+            zeros_repacked = None
+        else:
+            raise NotImplementedError(f"Unsupported node target: {node.target.__name__}")
 
         # Is this needed?
         # QNN constraint, topk output_0 requires having the same quant config as input
@@ -130,20 +156,11 @@ class TMANLinear(NodeVisitor):
         k = input_tensor.shape[-1]
         m = output_tensor.shape[-1]
 
-        qweight_repacked, scales_repacked, zeros_repacked, ref_bits, ref_group_size, ref_symmetric = unpack_gptqv2(
-            qweight_tensor.detach().numpy(),
-            scales_tensor.detach().numpy(),
-            qzeros_tensor.detach().numpy(),
-            gptq_v2,
-        )
-        assert ref_bits == bits and ref_group_size == group_size and ref_symmetric == symmetric, (
-            f"TMANLinear: bits/group_size/symmetric mismatch, {ref_bits}/{ref_group_size}/{ref_symmetric} != {bits}/{group_size}/{symmetric}"
-        )
         zeros_repacked = zeros_repacked if not symmetric else None
-        total_size = qweight_repacked.nbytes + (scales_repacked.size + (zeros_repacked.size if zeros_repacked is not None else 0)) * np.float16.itemsize
+        total_size = qweight_repacked.nbytes + (scales_repacked.size + (zeros_repacked.size if zeros_repacked is not None else 0)) * np.dtype("float16").itemsize
         vec_p = 128
         tile_p = _decide_tile_size(m*bits, total_size, divider=bits*vec_p)
-        qweight_repacked, scales_repacked = hvx_preprocess_weights_gptq(qweight_repacked, scales_repacked, zeros_repacked, bits, tile_p=tile_p, vec_p=vec_p)
+        qweight_repacked, scales_repacked = hvx_preprocess_weights(qweight_repacked, scales_repacked, zeros_repacked, bits, tile_p=tile_p, vec_p=vec_p)
         logger.info(f"TMANLinear: m={m}, k={k}, bits={bits}, tile_p={tile_p}, qweight({qweight_repacked.shape}))")
 
         qweight_tensor_wrapper = self.define_tensor(

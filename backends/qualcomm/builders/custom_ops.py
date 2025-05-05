@@ -1,4 +1,5 @@
 import torch
+from .utils import unpack_weights
 
 
 def _dequantize_weight(
@@ -119,5 +120,39 @@ def _(
     gptq_v2: bool,
 ) -> torch.Tensor:
     out_features = qweight.shape[1]
+    out_shape = x.shape[:-1] + (out_features,)
+    return x.new_zeros(out_shape)
+
+
+@torch.library.custom_op("tman::bitnet_linear", mutates_args=())
+def tman_bitnet_linear(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+) -> torch.Tensor:
+    # unpack weights
+    w = weight
+    w_quant = unpack_weights(w, dtype=x.dtype)
+    # activation_quant
+    num_bits = 8
+    Qn = -(2 ** (num_bits - 1))
+    Qp = 2 ** (num_bits - 1) - 1
+    scale = Qp / x.abs().max(dim=-1, keepdim=True).values.clamp(min=1e-5)
+    result = (x * scale).round().clamp(Qn, Qp)
+    input_quant, input_scale = result.to(torch.int8), scale
+    # linear
+    y = torch.nn.functional.linear(input_quant.to(x.dtype), w_quant)
+    y = y / input_scale * weight_scale
+    return y
+
+
+@tman_bitnet_linear.register_fake
+def _(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+) -> torch.Tensor:
+    VALUES_PER_ITEM = 4
+    out_features = weight.shape[0] * VALUES_PER_ITEM
     out_shape = x.shape[:-1] + (out_features,)
     return x.new_zeros(out_shape)

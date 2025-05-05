@@ -1146,9 +1146,17 @@ def annotate_split_with_sizes(node: Node, quantization_config: QuantizationConfi
 
 
 try:
-    from executorch.backends.qualcomm.builders.custom_ops import tman_linear
+    from executorch.backends.qualcomm.builders.custom_ops import tman_linear, tman_bitnet_linear
     @register_annotator([torch.ops.tman.linear.default])
     def annotate_tman_linear(node: Node, quantization_config: QuantizationConfig) -> None:
+        if _is_annotated([node]):
+            return
+        # We can use single_in_single_out since we don't want to quantize qweight and scales input
+        annotate_single_in_single_out(node, quantization_config)
+
+
+    @register_annotator([torch.ops.tman.bitnet_linear.default])
+    def annotate_tman_bitnet_linear(node: Node, quantization_config: QuantizationConfig) -> None:
         if _is_annotated([node]):
             return
         # We can use single_in_single_out since we don't want to quantize qweight and scales input

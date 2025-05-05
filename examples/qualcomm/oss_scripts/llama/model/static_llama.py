@@ -23,12 +23,14 @@ from executorch.backends.qualcomm.utils.utils import TMANLinear
 def apply_rotary_emb_single(
     x: torch.Tensor, freqs_cos: torch.Tensor, freqs_sin: torch.Tensor
 ) -> torch.Tensor:
-    x_r, x_i = x[..., ::2], x[..., 1::2]
-
-    # brodcast for batch_prefill mode input x
+    # The implementation of RoPE in HuggingFace processes query and key with two half instead of interleaved way.
+    # The main difference is stride in StrideSlice op. For interleaved way, stride is two which is not friendly for HTP backend.
+    # Ref: https://github.com/huggingface/transformers/issues/25199
+    x_r, x_i = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
+    # broadcast for batch_prefill mode input x
     if x.dim() == 4:
-        freqs_cos = freqs_cos[None, :, None, :]
-        freqs_sin = freqs_sin[None, :, None, :]
+        freqs_cos = freqs_cos[None, None, :, :]
+        freqs_sin = freqs_sin[None, None, :, :]
     x_out_r = x_r * freqs_cos - x_i * freqs_sin
     x_out_i = x_r * freqs_sin + x_i * freqs_cos
 
@@ -515,6 +517,8 @@ class LlamaModel(nn.Module):
             config.dim // config.n_heads,
             config.max_seq_len,
             config.rope_freq_base,
+            # config.use_scaled_rope,
+            # config.rope_scale_factor,
         )
         self.register_buffer("freqs_cos", freqs_cos, persistent=False)
         self.register_buffer("freqs_sin", freqs_sin, persistent=False)

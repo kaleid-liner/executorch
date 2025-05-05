@@ -79,7 +79,7 @@ GraphStatus tmanprecomputeImpl(TensorType& l,
   const XType* x_ptr = (const XType*)x.raw_data_const();
   LType* l_ptr = (LType*)l.raw_data();
   float* ls_ptr = (float*)(l_ptr + l_size);
-  float* lb_ptr = ls_ptr + ls_size;
+  float* lb_ptr = ls_ptr + MAX(ls_size, 128 / sizeof(float));
 
   if (zero_point && group_size == 64)  // w2g64, symmetric=False
   {

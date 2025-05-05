@@ -12,6 +12,7 @@
 
 #define UNUSED(x) (void)(x)
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 static inline int32_t _fp32_to_bits(float x)
 {
@@ -301,7 +302,7 @@ template <typename LType = int16_t,
           int TileK = 256,
           int g = 4,
           bool WeightsInVTCM = false>
-inline typename std::enable_if_t<std::is_same<LType, int16_t>::value && std::is_same<XType, __fp16>::value && std::is_same<CType, float>::value, int>
+inline typename std::enable_if_t<std::is_same<LType, int16_t>::value && std::is_same<XType, __fp16>::value && std::is_same<CType, float>::value && (GroupSize > 0), int>
 hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float *ls, const float *lb, const uint8_t *w, const XType *s, CType *c)
 {
   UNUSED(GemmN);
@@ -533,6 +534,162 @@ hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float
       vmem(c + (vec_p + 64)) = c_vec_2;
       vmem(c + (vec_p + 96)) = c_vec_3;
     }
+  }
+
+  return 0;
+}
+
+// For BitNet
+template <typename LType = int16_t,
+          typename XType = __fp16,
+          typename CType = float,  // use for aggregation
+          int ActGroupSize = 256,  // 256 should be enough for int16_t quantization
+          int GroupSize = 128,
+          bool ZeroPoint = false,
+          int Bits = 2,
+          int TileK = 256,
+          int g = 4,
+          bool WeightsInVTCM = false>
+inline typename std::enable_if_t<std::is_same<LType, int16_t>::value && std::is_same<XType, __fp16>::value && std::is_same<CType, float>::value && GroupSize == -1, int>
+hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float *ls, const float *lb, const uint8_t *w, const XType *s, CType *c)
+{
+  UNUSED(GemmN);
+
+  // Number of elements in a single 4bit pack
+  constexpr int8_t mask_4bit = 0b1111;
+  constexpr int8_t shift_len = 4;
+
+  const HVX_Vector mask_vec = Q6_Vb_vsplat_R(mask_4bit);
+  const HVX_Vector ones_vec = Q6_Vh_vsplat_R(0x3C00);  // 1.0f
+
+  constexpr int32_t lut_size = 16;
+  constexpr int32_t lut_bytes = lut_size * sizeof(LType);
+  // K, M -> Q, P lookup Q tables with P indices
+  // Q = K / g, P = M * Bits
+  // x_shape: (Q / TileQ, TileQ / VecQ, VecQ, lut_size) = (Q, lut_size), elem_size = 2 bytes
+  // w_shape: (P / TileP, Q / TileQ, TileP / VecP, TileQ / VecQ, VecQ, VecP) indices, elem_size = g / 8 = 0.5 bytes
+  // indices of two VecQ are zipped into one Vector
+  const int32_t Q = GemmK / g;
+  const int32_t P = GemmM * Bits;
+
+  constexpr int32_t VecQ = VLEN / lut_bytes;
+  constexpr int32_t VecP = VLEN / sizeof(uint8_t);
+
+  constexpr int32_t TileQ = TileK / g;
+  // TileP = ThreadP
+  const int32_t TileP = P;
+
+  // In practice, for int16_t activation, group size < act group size (not required)
+  static_assert((ActGroupSize == -1), "For BitNet model, only per-tensor quantization is supported");
+  static_assert(!ZeroPoint, "For BitNet model, the quantization should be symmetric");
+  // Implies that GroupSize % 16 == 0
+  static_assert((Bits <= 4 && Bits >= 2), "2 <= Bits <= 4 is required");  // Bits == 1 also works. Just need to multiply lb by 2
+
+  // Step.1: TABLE TOOKUP
+  HVX_Vector lvec_arr[TileQ / VecQ];
+
+  memset(c, 0, sizeof(CType) * TileP);
+
+  for (int32_t tile_q = 0; tile_q < Q; tile_q += TileQ)
+  {
+#pragma unroll
+    for (int32_t vec_q = 0; vec_q < TileQ; vec_q += VecQ)
+    {
+      lvec_arr[vec_q / VecQ] = vmem(l + (tile_q + vec_q) * lut_size);
+    }
+
+    const uint8_t *w_tile_base = w + tile_q * TileP * g / 8;
+
+#pragma unroll(Bits)
+    for (int32_t vec_p = 0; vec_p < TileP; vec_p += VecP)
+    {
+      // qf32
+      // we should guarantee all these belong to the same bits during preprocessing
+      // i.e., VecBits = VecP = VecC * 4
+      // TODO: if this works and the performance is good, also apply to BitNet
+      HVX_Vector c_vec_0 = vmem(c + (vec_p +  0));
+      HVX_Vector c_vec_1 = vmem(c + (vec_p + 32));
+      HVX_Vector c_vec_2 = vmem(c + (vec_p + 64));
+      HVX_Vector c_vec_3 = vmem(c + (vec_p + 96));
+
+      // int32_t
+      HVX_VectorPair c_vec_lo;
+      HVX_VectorPair c_vec_hi;
+
+      const uint8_t *w_base = w_tile_base + vec_p * TileQ * g / 8;
+      if (!WeightsInVTCM)
+      {
+        if (vec_p + VecP < TileP)
+        {
+          l2fetch(w_base + VecP * TileQ * g / 8, VecP, VecP, TileQ * g / 8, 0);
+        }
+      }
+
+#pragma unroll
+      for (int32_t vec_q = 0; vec_q < TileQ; vec_q += VecQ)
+      {
+        HVX_Vector w_vec_lo = vmem(w_base + vec_q * VecP * g / 8 + 0);
+        HVX_Vector w_vec_hi = vmem(w_base + vec_q * VecP * g / 8 + VLEN);
+
+        HVX_Vector w_vec_lo_bo = Q6_V_vand_VV(w_vec_lo, mask_vec);     // Q = 0
+        HVX_Vector w_vec_hi_bo = Q6_V_vand_VV(w_vec_hi, mask_vec);     // Q = 2
+        HVX_Vector w_vec_lo_to = Q6_Vh_vasr_VhR(w_vec_lo, shift_len);  // Q = 1
+        HVX_Vector w_vec_hi_to = Q6_Vh_vasr_VhR(w_vec_hi, shift_len);  // Q = 3
+
+        // int16_t
+        // c_vec_lo_bo_lo: even bytes of w_vec_lo_bo, c_vec_lo_bo_hi: odd bytes of w_vec_lo_bo
+        HVX_VectorPair c_vec_lo_bo = Q6_Wh_vlut16_VbVhR_nomatch(w_vec_lo_bo, lvec_arr[vec_q / VecQ], 0);  // Q = 0, even lo
+        HVX_VectorPair c_vec_hi_bo = Q6_Wh_vlut16_VbVhR_nomatch(w_vec_hi_bo, lvec_arr[vec_q / VecQ], 1);  // Q = 2, even hi
+        HVX_VectorPair c_vec_lo_to = Q6_Wh_vlut16_VbVhR_nomatch(w_vec_lo_to, lvec_arr[vec_q / VecQ], 2);  // Q = 1, odd lo
+        HVX_VectorPair c_vec_hi_to = Q6_Wh_vlut16_VbVhR_nomatch(w_vec_hi_to, lvec_arr[vec_q / VecQ], 3);  // Q = 3, odd hi
+
+        // After unroll, the boolean variables should be broadcasted to constexpr and the branches will be expanded
+        const bool cmp_blk_head  = (vec_q == 0);
+
+        // int32_t
+        // c_vec_lo: even bytes of w_vec
+        // c_vec_hi:  odd bytes of w_vec
+        // TAG0: Here widening add will perform a 2x64 transpose
+        if (cmp_blk_head)
+        {
+          // reset int32_t sum
+          c_vec_lo = Q6_Ww_vadd_VhVh(Q6_V_lo_W(c_vec_lo_bo), Q6_V_lo_W(c_vec_hi_bo));
+          c_vec_hi = Q6_Ww_vadd_VhVh(Q6_V_hi_W(c_vec_lo_bo), Q6_V_hi_W(c_vec_hi_bo));
+        }
+        else
+        {
+          c_vec_lo = Q6_Ww_vaddacc_WwVhVh(c_vec_lo, Q6_V_lo_W(c_vec_lo_bo), Q6_V_lo_W(c_vec_hi_bo));
+          c_vec_hi = Q6_Ww_vaddacc_WwVhVh(c_vec_hi, Q6_V_hi_W(c_vec_lo_bo), Q6_V_hi_W(c_vec_hi_bo));
+        }
+        c_vec_lo = Q6_Ww_vaddacc_WwVhVh(c_vec_lo, Q6_V_lo_W(c_vec_lo_to), Q6_V_lo_W(c_vec_hi_to));
+        c_vec_hi = Q6_Ww_vaddacc_WwVhVh(c_vec_hi, Q6_V_hi_W(c_vec_lo_to), Q6_V_hi_W(c_vec_hi_to));
+
+        c_vec_0 = Q6_Vw_vadd_VwVw(c_vec_0, Q6_V_lo_W(c_vec_lo));
+        c_vec_1 = Q6_Vw_vadd_VwVw(c_vec_1, Q6_V_lo_W(c_vec_hi));
+        c_vec_2 = Q6_Vw_vadd_VwVw(c_vec_2, Q6_V_hi_W(c_vec_lo));
+        c_vec_3 = Q6_Vw_vadd_VwVw(c_vec_3, Q6_V_hi_W(c_vec_hi));
+      }
+
+      vmem(c + (vec_p +  0)) = c_vec_0;
+      vmem(c + (vec_p + 32)) = c_vec_1;
+      vmem(c + (vec_p + 64)) = c_vec_2;
+      vmem(c + (vec_p + 96)) = c_vec_3;
+    }
+  }
+
+  HVX_Vector ls_vec = Q6_V_vsplat_R(_fp32_to_bits(ls[0]));
+  HVX_Vector lb_vec = Q6_V_vsplat_R(_fp32_to_bits(lb[0]));
+  HVX_Vector s_vec = Q6_V_lo_W(Q6_Wqf32_vmpy_VhfVhf(Q6_Vh_vsplat_R(_fp16_to_bits(s)), ones_vec));
+#pragma unroll(4)
+  for (int32_t vec_p = 0; vec_p < TileP; vec_p += VecP / sizeof(CType))
+  {
+    // (c * ls + lb) * s
+    HVX_Vector c_vec = vmem(c + vec_p);
+    HVX_Vector c_vec_sf = Q6_Vsf_equals_Vw(c_vec);
+    HVX_Vector c_vec_qf32 = Q6_Vqf32_vmpy_VsfVsf(c_vec_sf, ls_vec);
+    c_vec_qf32 = Q6_Vqf32_vadd_Vqf32Vsf(c_vec_qf32, lb_vec);
+    c_vec_qf32 = Q6_Vqf32_vmpy_Vqf32Vqf32(c_vec_qf32, s_vec);
+    vmem(c + vec_p) = c_vec;
   }
 
   return 0;

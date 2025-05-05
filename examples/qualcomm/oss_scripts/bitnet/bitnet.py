@@ -44,9 +44,8 @@ from executorch.backends.qualcomm.utils.constants import (
 from executorch.backends.qualcomm.utils.utils import (
     capture_program,
     convert_linear_to_conv2d,
-    convert_qlinear_to_tman_linear,
-    convert_qlinear_to_linear,
-    convert_linear_to_qlinear,
+    convert_linear_to_bitlinear,
+    convert_bitlinear_to_linear,
     generate_composite_llama_program,
     generate_htp_compiler_spec,
     generate_multi_graph_program,
@@ -61,10 +60,10 @@ from executorch.examples.models.llama.source_transformation.quantize import (
     get_quant_embedding_transform,
 )
 from executorch.examples.models.llama.tokenizer.tiktoken import Tokenizer as Tiktoken
-from executorch.examples.qualcomm.oss_scripts.llama.model.static_llama import (
-    LlamaModel,
-    ModelArgs,
-    LlamaDecoderLayer,
+from executorch.examples.qualcomm.oss_scripts.bitnet.model.static_bitnet import (
+    BitNetForCausalLM,
+    BitNetConfig,
+    BitNetDecoderLayer,
 )
 from executorch.examples.qualcomm.utils import (
     make_output_dir,
@@ -82,10 +81,14 @@ from executorch.extension.llm.export.builder import DType
 from executorch.extension.llm.tokenizer.tokenizer import (
     Tokenizer as SentencePieceTokenizer,
 )
+from executorch.extension.llm.tokenizer.hf_tokenizer import HuggingFaceTokenizer
 from executorch.extension.llm.tokenizer.utils import get_tokenizer
 
 from torch.ao.quantization.observer import MinMaxObserver
 from torch.ao.quantization.quantize_pt2e import convert_pt2e, prepare_pt2e
+
+from safetensors.torch import load_file
+
 
 sys.setrecursionlimit(4096)
 FORMAT = "[%(levelname)s %(asctime)s %(filename)s:%(lineno)s] %(message)s"
@@ -151,6 +154,8 @@ def _kv_calibrate(
         token_list = tokenizer.encode(
             user_prompts, bos=True, eos=False, allowed_special="all"
         )
+    elif isinstance(tokenizer, HuggingFaceTokenizer):
+        token_list = tokenizer.encode(user_prompts, bos=True, eos=False)
     else:
         raise RuntimeError("Unkown tokenizer")
 
@@ -496,111 +501,68 @@ def compile(args, pte_filename, tokenizer):
     os.makedirs(args.artifact, exist_ok=True)
     start_ts = time.time()
 
-    with open(args.params) as f:
-        kv_config = ModelArgs(**json.load(f))
-        # TODO: support batch inputs if necessary
-        kv_config.max_batch_size = 1
-        kv_config.max_seq_len = args.max_seq_len
-        kv_config.use_kv_cache = True
+    config = BitNetConfig.from_pretrained(args.model_dir)
 
-        prefill_config = copy.copy(kv_config)
-        prefill_config.max_seq_len = args.max_seq_len
-        prefill_config.use_kv_cache = (
-            False if args.max_seq_len == args.prefill_ar_len else True
-        )
-
-    state_dict = torch.load(
-        args.checkpoint, weights_only=True, map_location="cpu", mmap=True
-    )
+    state_dict = load_file(os.path.join(args.model_dir, "model.safetensors"))
 
     llama_instance_list = []
     use_i64_token = args.embedding_quantize is not None
     with torch.device("meta"):
         if args.model_mode == "kv":
             llama_instance_list.append(
-                LlamaModel(
-                    kv_config,
+                BitNetForCausalLM(
+                    config,
                     ar_len=1,
-                    output_new_cache_only=True,
-                    output_cache=True,
+                    max_seq_len=args.max_seq_len,
                     use_i64_token=use_i64_token,
                 )
             )
         elif args.model_mode == "hybrid":
             llama_instance_list.append(
-                LlamaModel(
-                    kv_config,
+                BitNetForCausalLM(
+                    config,
                     ar_len=1,
-                    output_new_cache_only=True,
-                    output_cache=True,
+                    max_seq_len=args.max_seq_len,
                     use_i64_token=use_i64_token,
                 )
             )
             llama_instance_list.append(
-                LlamaModel(
-                    prefill_config,
+                BitNetForCausalLM(
+                    config,
                     ar_len=args.prefill_ar_len,
-                    output_new_cache_only=True,
-                    output_cache=True,
+                    max_seq_len=args.max_seq_len,
                     use_i64_token=use_i64_token,
                 )
             )
         else:
             raise RuntimeError(f"Unknown model_mode: {args.model_mode}.")
 
-    if args.gptq_dir:
-        from gptqmodel.quantization.config import QuantizeConfig
-        from gptqmodel.nn_modules.qlinear.torch import TorchQuantLinear
-        qcfg = QuantizeConfig.from_pretrained(args.gptq_dir)
-        if qcfg.desc_act:
-            raise RuntimeError(
-                "desc_act=True is unsupported right now."
-            )
-        qlinear_cls = partial(
-            TorchQuantLinear,
-            bits=qcfg.bits,
-            group_size=qcfg.group_size,
-            desc_act=qcfg.desc_act,
-            sym=qcfg.sym,
-            pack_dtype=qcfg.pack_dtype,
-            device=qcfg.device,
-            adapter=qcfg.adapter,
-        )
-        for llama_instance in llama_instance_list:
-            layer: LlamaDecoderLayer
-            for layer in llama_instance.layers:
-                convert_linear_to_qlinear(layer.attention, qlinear_cls)
-                convert_linear_to_qlinear(layer.feed_forward, qlinear_cls)
-
-    if "model" in state_dict:
-        state_dict = state_dict["model"]
+    for llama_instance in llama_instance_list:
+        for layer in llama_instance.model.layers:
+            layer: BitNetDecoderLayer
+            convert_linear_to_bitlinear(layer.self_attn)
+            convert_linear_to_bitlinear(layer.mlp)
 
     for llama_instance in llama_instance_list:
-        llama_instance.load_state_dict(
+        incompatible_keys = llama_instance.load_state_dict(
             state_dict,
-            strict=True,
+            strict=False,
             assign=True,
         )
+        assert len(incompatible_keys.missing_keys) <= 1 and len(incompatible_keys.unexpected_keys) == 0
+        llama_instance.tie_weights()
     end_load_ts = time.time()
     logging.info(f"Time for loading checkpoint: {end_load_ts - start_ts}")
 
     for llama_instance in llama_instance_list:
-        for layer in llama_instance.layers:
-            if args.gptq_dir:
-                # TODO: optimize the performance when needed
-                if args.use_tman:
-                    if getattr(layer.attention, "prepare_tman", None):
-                        layer.attention.prepare_tman(do_permute=False, use_sha=False)
-                    convert_qlinear_to_tman_linear(layer.feed_forward)
-                else:
-                    convert_qlinear_to_linear(layer.attention)
-                    # layer.attention.wq.weight.data.copy_(permute(layer.attention.wq.weight, kv_config.n_heads, kv_config.n_heads))
-                    # layer.attention.wk.weight.data.copy_(permute(layer.attention.wk.weight, kv_config.n_heads, kv_config.n_kv_heads))
-                    if getattr(layer.attention, "prepare_sha", None):
-                        layer.attention.prepare_sha()
-                    convert_qlinear_to_linear(layer.feed_forward)
-                    if getattr(layer.feed_forward, "prepare_feedfoward_conv", None):
-                        layer.feed_forward.prepare_feedfoward_conv()
+        for layer in llama_instance.model.layers:
+            if args.use_tman:
+                # TODO
+                layer.self_attn.prepare_tman()
+            else:
+                convert_bitlinear_to_linear(layer.self_attn)
+                layer.self_attn.prepare_sha()
+                convert_bitlinear_to_linear(layer.mlp)
 
     use_fp16 = True
     fixed_point_type = {"kv_type": torch.float32, "io_type": torch.float32}
@@ -637,7 +599,6 @@ def compile(args, pte_filename, tokenizer):
                 "skip_node"
             ] = {"tokens"}
         llama_instance_list[i] = convert_linear_to_conv2d(llama_instance_list[i])
-        # llama_instance_list[i] = convert_qlinear_to_tman_linear(llama_instance_list[i])
         print(llama_instance_list[i])
         llama_instance_list[i] = SingleLlama(
             llama_instance_list[i].eval(), pte_filename
@@ -992,21 +953,14 @@ def _build_parser():
 
     parser.add_argument(
         "--llama_model",
-        choices=["stories110m", "llama3_2"],
+        choices=["stories110m", "llama3_2", "bitnet"],
         help="The Llama model to export. Current available options are: [stories110m, llama3_2]",
         required=True,
     )
 
     parser.add_argument(
-        "--checkpoint",
+        "--model_dir",
         help="Pass llama checkpoint.",
-        required=True,
-        type=str,
-    )
-
-    parser.add_argument(
-        "--params",
-        help="Pass llama params json file.",
         required=True,
         type=str,
     )
@@ -1107,13 +1061,6 @@ def _build_parser():
     )
 
     parser.add_argument(
-        "--gptq_dir",
-        default=None,
-        type=str,
-        help="Path to the GPTQ model dir, which should contain config.json or quantize_config.json.",
-    )
-
-    parser.add_argument(
         "--use_tman",
         action="store_true",
         help="Use TMANLinear instead of QNNConv2d.",
@@ -1152,6 +1099,11 @@ def export_llama(args) -> None:
         assert isinstance(
             tokenizer, Tiktoken
         ), f"Wrong tokenizer provided for llama3_2."
+        runtime_tokenizer_path = args.tokenizer_model
+    elif args.llama_model == "bitnet":
+        assert isinstance(
+            tokenizer, HuggingFaceTokenizer
+        ), f"Wrong tokenizer provided for bitnet."
         runtime_tokenizer_path = args.tokenizer_model
     else:
         raise RuntimeError(f"Unknown llama_model: {args.llama_model}.")

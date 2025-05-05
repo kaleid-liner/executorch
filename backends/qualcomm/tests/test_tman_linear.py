@@ -23,7 +23,7 @@ qlinear.post_init()
 x = torch.from_numpy(np.fromfile(os.path.join(data_path, "x.bin"), dtype=np.float16)).reshape(N, K)
 y_ref = qlinear.forward(x)
 
-from executorch.backends.qualcomm.builders.utils import unpack_gptqv2, hvx_preprocess_weights_gptq
+from executorch.backends.qualcomm.builders.utils import unpack_gptqv2, hvx_preprocess_weights
 w, scales, zeros, _, _, _ = unpack_gptqv2(qlinear.qweight.numpy(), qlinear.scales.numpy(), qlinear.qzeros.numpy())
 w.tofile(os.path.join(data_path, "w_unpacked.bin"))
 scales.tofile(os.path.join(data_path, "s_unpacked.bin"))
@@ -36,6 +36,6 @@ w_dq = w_dq.transpose(1, 0, 2).reshape(K, M)
 
 y_ref2 = x.numpy().dot(w_dq)
 
-qweight_repacked, scales_repacked = hvx_preprocess_weights_gptq(w, scales, zeros, bits, tile_p=M*bits)
+qweight_repacked, scales_repacked = hvx_preprocess_weights(w, scales, zeros, bits, tile_p=M*bits)
 qweight_repacked.tofile(os.path.join(data_path, "w_repacked.bin"))
 scales_repacked.tofile(os.path.join(data_path, "s_repacked.bin"))
