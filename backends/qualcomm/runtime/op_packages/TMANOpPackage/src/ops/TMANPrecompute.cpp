@@ -74,7 +74,8 @@ GraphStatus tmanprecomputeImpl(TensorType& l,
   const bool zero_point    = ((const int32_t*)t_symmetric.raw_data_const())[0] == 0;
 
   const int32_t l_size  = gemm_k / LUT_G * LUT_SIZE;
-  const int32_t ls_size = (ACT_GROUP_SIZE == -1) ? 1 : (gemm_k / ACT_GROUP_SIZE);
+  const int32_t real_act_group_size = (group_size == 0) ? -1 : ACT_GROUP_SIZE;
+  const int32_t ls_size = (real_act_group_size == -1) ? 1 : (gemm_k / real_act_group_size);
 
   const XType* x_ptr = (const XType*)x.raw_data_const();
   LType* l_ptr = (LType*)l.raw_data();
@@ -92,6 +93,10 @@ GraphStatus tmanprecomputeImpl(TensorType& l,
   else if (zero_point && group_size == 128)  // w4g128, symmetric=False
   {
     hvx_lut_ctor<LType, XType, ACT_GROUP_SIZE, 128, true, LUT_G>(gemm_k, gemm_n, x_ptr, l_ptr, ls_ptr, lb_ptr);
+  }
+  else if (!zero_point && group_size == 0)  // bitnet
+  {
+    hvx_lut_ctor<LType, XType, -1, 0, false, LUT_G>(gemm_k, gemm_n, x_ptr, l_ptr, ls_ptr, lb_ptr);
   }
   else
   {

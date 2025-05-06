@@ -93,6 +93,7 @@ class LayoutTransform(ExportPass):
         *dq_ops,
         _operator.getitem,
         exir_ops.edge.tman.linear.default,
+        exir_ops.edge.tman.bitnet_linear.default,
     }
 
     layout_type = {

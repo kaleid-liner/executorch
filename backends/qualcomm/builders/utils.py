@@ -250,8 +250,12 @@ def hvx_preprocess_weights(
             scales = np.stack([scales, zeros], axis=-2)
         scales = scales.view(np.int32).reshape(P // tile_p, -1)
     else:  # BitNet
-        if zeros is not None:
-            scales = np.concatenate([scales, zeros])
+        scales = scales.view(np.uint16).reshape(1, -1)
+        # [ERROR] [Qnn ExecuTorch]: QnnDsp <E> Dma execution failed on the skel side. result = 1100 transport error = 0
+        # Padding to vec_p
+        # TODO: verify if the padding is needed
+        if scales.nbytes < vec_p:
+            scales = np.resize(scales, (1, vec_p // np.dtype("int16").itemsize))
     return w, scales
 
 

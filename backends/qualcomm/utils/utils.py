@@ -677,8 +677,6 @@ def capture_program(
     module = ConvertSquareToPow()(module).graph_module
     module = LiftConstantScalarOperands()(module).graph_module
     ep = torch.export.export(module, inputs, dynamic_shapes=dynamic_shapes)
-    # torch.export.save(ep, "temp.pt2")
-    # ep = torch.export.load("temp.pt2")
     decomposed_ep = ep.run_decompositions(get_decomp_table())
     core_ep = ExirExportedProgram(decomposed_ep, False)
     core_ep.transform(TensorI64toI32(edge_program=core_ep))

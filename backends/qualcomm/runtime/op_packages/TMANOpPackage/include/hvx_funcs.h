@@ -65,16 +65,13 @@ hvx_lut_ctor(int32_t GemmK, int32_t GemmN, const XType *x, LType *l, float *ls, 
 
   const int32_t Q = GemmK / g;
 
-  constexpr int32_t q_act_group_size = (ActGroupSize < 0) ? (Q / -ActGroupSize) : (ActGroupSize / g);
-  constexpr int32_t q_group_size     = (GroupSize == 0) ? Q : (GroupSize / g);
+  const int32_t q_act_group_size = (ActGroupSize < 0) ? (Q / -ActGroupSize) : (ActGroupSize / g);
+  const int32_t q_group_size     = (GroupSize == 0) ? Q : (GroupSize / g);
 
   constexpr int32_t lut_size = 16;
   constexpr float max_int16 = 32767.0f;
 
   constexpr int32_t VecQ = VLEN / sizeof(XType);
-
-  static_assert((q_act_group_size % VecQ == 0), "q_act_group_size must be multiple of VecQ");
-  static_assert((q_act_group_size % q_group_size == 0) || (q_group_size % q_act_group_size == 0), "q_group_size must be multiple of q_act_group_size or vice versa");
 
   const HVX_Vector zero_vec = Q6_V_vzero();
   const HVX_Vector ones_vec = Q6_Vh_vsplat_R(0x3C00);  // 1.0f
@@ -273,7 +270,7 @@ hvx_lut_ctor(int32_t GemmK, int32_t GemmN, const XType *x, LType *l, float *ls, 
       if (q_group_size < VecQ)
       {
         // self_sum with VecQ/q_group_size groups
-        constexpr int32_t sum_len = VLEN / (VecQ / q_group_size);
+        const int32_t sum_len = VLEN / (VecQ / q_group_size);
         for (int32_t i = sum_len / 2; i >= 4; i >>= 1)
         {
           lb_val_vec = Q6_Vqf32_vadd_Vqf32Vqf32(lb_val_vec, Q6_V_vlalign_VVR(lb_val_vec, zero_vec, i));
@@ -390,7 +387,6 @@ hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float
       // qf32
       // we should guarantee all these belong to the same bits during preprocessing
       // i.e., VecBits = VecP = VecC * 4
-      // TODO: if this works and the performance is good, also apply to BitNet
       HVX_Vector c_vec_0 = vmem(c + (vec_p +  0));
       HVX_Vector c_vec_1 = vmem(c + (vec_p + 32));
       HVX_Vector c_vec_2 = vmem(c + (vec_p + 64));
@@ -550,7 +546,7 @@ template <typename LType = int16_t,
           int TileK = 256,
           int g = 4,
           bool WeightsInVTCM = false>
-inline typename std::enable_if_t<std::is_same<LType, int16_t>::value && std::is_same<XType, __fp16>::value && std::is_same<CType, float>::value && GroupSize == -1, int>
+inline typename std::enable_if_t<std::is_same<LType, int16_t>::value && std::is_same<XType, __fp16>::value && std::is_same<CType, float>::value && GroupSize == 0, int>
 hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float *ls, const float *lb, const uint8_t *w, const XType *s, CType *c)
 {
   UNUSED(GemmN);
@@ -606,15 +602,14 @@ hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float
       // qf32
       // we should guarantee all these belong to the same bits during preprocessing
       // i.e., VecBits = VecP = VecC * 4
-      // TODO: if this works and the performance is good, also apply to BitNet
       HVX_Vector c_vec_0 = vmem(c + (vec_p +  0));
       HVX_Vector c_vec_1 = vmem(c + (vec_p + 32));
       HVX_Vector c_vec_2 = vmem(c + (vec_p + 64));
       HVX_Vector c_vec_3 = vmem(c + (vec_p + 96));
 
       // int32_t
-      HVX_VectorPair c_vec_lo;
-      HVX_VectorPair c_vec_hi;
+      HVX_VectorPair c_vec_lo = Q6_W_vcombine_VV(c_vec_2, c_vec_0);
+      HVX_VectorPair c_vec_hi = Q6_W_vcombine_VV(c_vec_3, c_vec_1);
 
       const uint8_t *w_base = w_tile_base + vec_p * TileQ * g / 8;
       if (!WeightsInVTCM)
@@ -643,53 +638,42 @@ hvx_tbl(int32_t GemmM, int32_t GemmK, int32_t GemmN, const LType *l, const float
         HVX_VectorPair c_vec_lo_to = Q6_Wh_vlut16_VbVhR_nomatch(w_vec_lo_to, lvec_arr[vec_q / VecQ], 2);  // Q = 1, odd lo
         HVX_VectorPair c_vec_hi_to = Q6_Wh_vlut16_VbVhR_nomatch(w_vec_hi_to, lvec_arr[vec_q / VecQ], 3);  // Q = 3, odd hi
 
-        // After unroll, the boolean variables should be broadcasted to constexpr and the branches will be expanded
-        const bool cmp_blk_head  = (vec_q == 0);
-
         // int32_t
         // c_vec_lo: even bytes of w_vec
         // c_vec_hi:  odd bytes of w_vec
         // TAG0: Here widening add will perform a 2x64 transpose
-        if (cmp_blk_head)
-        {
-          // reset int32_t sum
-          c_vec_lo = Q6_Ww_vadd_VhVh(Q6_V_lo_W(c_vec_lo_bo), Q6_V_lo_W(c_vec_hi_bo));
-          c_vec_hi = Q6_Ww_vadd_VhVh(Q6_V_hi_W(c_vec_lo_bo), Q6_V_hi_W(c_vec_hi_bo));
-        }
-        else
-        {
-          c_vec_lo = Q6_Ww_vaddacc_WwVhVh(c_vec_lo, Q6_V_lo_W(c_vec_lo_bo), Q6_V_lo_W(c_vec_hi_bo));
-          c_vec_hi = Q6_Ww_vaddacc_WwVhVh(c_vec_hi, Q6_V_hi_W(c_vec_lo_bo), Q6_V_hi_W(c_vec_hi_bo));
-        }
+        c_vec_lo = Q6_Ww_vaddacc_WwVhVh(c_vec_lo, Q6_V_lo_W(c_vec_lo_bo), Q6_V_lo_W(c_vec_hi_bo));
+        c_vec_hi = Q6_Ww_vaddacc_WwVhVh(c_vec_hi, Q6_V_hi_W(c_vec_lo_bo), Q6_V_hi_W(c_vec_hi_bo));
         c_vec_lo = Q6_Ww_vaddacc_WwVhVh(c_vec_lo, Q6_V_lo_W(c_vec_lo_to), Q6_V_lo_W(c_vec_hi_to));
         c_vec_hi = Q6_Ww_vaddacc_WwVhVh(c_vec_hi, Q6_V_hi_W(c_vec_lo_to), Q6_V_hi_W(c_vec_hi_to));
-
-        c_vec_0 = Q6_Vw_vadd_VwVw(c_vec_0, Q6_V_lo_W(c_vec_lo));
-        c_vec_1 = Q6_Vw_vadd_VwVw(c_vec_1, Q6_V_lo_W(c_vec_hi));
-        c_vec_2 = Q6_Vw_vadd_VwVw(c_vec_2, Q6_V_hi_W(c_vec_lo));
-        c_vec_3 = Q6_Vw_vadd_VwVw(c_vec_3, Q6_V_hi_W(c_vec_hi));
       }
 
-      vmem(c + (vec_p +  0)) = c_vec_0;
-      vmem(c + (vec_p + 32)) = c_vec_1;
-      vmem(c + (vec_p + 64)) = c_vec_2;
-      vmem(c + (vec_p + 96)) = c_vec_3;
+      vmem(c + (vec_p +  0)) = Q6_V_lo_W(c_vec_lo);
+      vmem(c + (vec_p + 32)) = Q6_V_lo_W(c_vec_hi);
+      vmem(c + (vec_p + 64)) = Q6_V_hi_W(c_vec_lo);
+      vmem(c + (vec_p + 96)) = Q6_V_hi_W(c_vec_hi);
     }
   }
 
   HVX_Vector ls_vec = Q6_V_vsplat_R(_fp32_to_bits(ls[0]));
   HVX_Vector lb_vec = Q6_V_vsplat_R(_fp32_to_bits(lb[0]));
   HVX_Vector s_vec = Q6_V_lo_W(Q6_Wqf32_vmpy_VhfVhf(Q6_Vh_vsplat_R(_fp16_to_bits(s)), ones_vec));
-#pragma unroll(4)
-  for (int32_t vec_p = 0; vec_p < TileP; vec_p += VecP / sizeof(CType))
+#pragma unroll(Bits)
+  for (int32_t vec_p = 0; vec_p < TileP; vec_p += VecP)
   {
-    // (c * ls + lb) * s
-    HVX_Vector c_vec = vmem(c + vec_p);
-    HVX_Vector c_vec_sf = Q6_Vsf_equals_Vw(c_vec);
-    HVX_Vector c_vec_qf32 = Q6_Vqf32_vmpy_VsfVsf(c_vec_sf, ls_vec);
-    c_vec_qf32 = Q6_Vqf32_vadd_Vqf32Vsf(c_vec_qf32, lb_vec);
-    c_vec_qf32 = Q6_Vqf32_vmpy_Vqf32Vqf32(c_vec_qf32, s_vec);
-    vmem(c + vec_p) = c_vec;
+#pragma unroll
+    for (int32_t vec_c = vec_p; vec_c < vec_p + VecP; vec_c += VecP / sizeof(CType))
+    {
+      HVX_Vector c_vec = vmem(c + vec_c);
+      c_vec = Q6_Vsf_equals_Vw(c_vec);
+      c_vec = Q6_Vqf32_vmpy_VsfVsf(c_vec, ls_vec);     // * ls
+      if (vec_p % (VecP * Bits) == VecP)
+      {
+        c_vec = Q6_Vqf32_vadd_Vqf32Vsf(c_vec, lb_vec); // + lb
+      }
+      c_vec = Q6_Vqf32_vmpy_Vqf32Vqf32(c_vec, s_vec);  // * s
+      vmem(c + vec_c) = c_vec;
+    }
   }
 
   return 0;

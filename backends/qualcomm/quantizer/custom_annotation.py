@@ -181,8 +181,6 @@ def annotate_matmul_16a8w(gm: torch.fx.GraphModule) -> None:  # noqa: C901
                 torch.ops.aten.transpose.int,
                 torch.ops.aten.view.default,
                 torch.ops.aten.reshape.default,
-                torch.ops.aten.split_with_sizes.default,
-                operator.getitem,
             ]:
                 annotate_single_in_single_out(node, quantization_config_8a8w)
                 node = node.args[0]
@@ -200,6 +198,8 @@ def annotate_matmul_16a8w(gm: torch.fx.GraphModule) -> None:  # noqa: C901
             elif node.target in [
                 torch.ops.tman.linear.default,
                 torch.ops.tman.bitnet_linear.default,
+                torch.ops.aten.split_with_sizes.default,
+                operator.getitem,
             ]:
                 # TODO: tman::linear currently does not support 8a
                 break

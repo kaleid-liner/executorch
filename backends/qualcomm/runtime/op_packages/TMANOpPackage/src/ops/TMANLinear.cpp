@@ -62,14 +62,17 @@ DEF_PACKAGE_OP((tmanlinearImpl<Tensor>), "TMANLinear")
 
 DEF_TENSOR_PROPERTIES(
   Op("TMANLinear", "l", "qweight", "scales", "group_size", "bits", "symmetric"),
-  Flat("*", "l", "qweight", "scales"),
-  MainMemory("group_size", "bits", "symmetric"),
-  Tcm("*", "l", "qweight", "scales"))
+  Flat("*", "qweight", "scales"),
+  MainMemory("qweight", "scales", "group_size", "bits", "symmetric"),
+  Tcm("*", "l"))
 
+#define SIZE_OF(WEIGHT) MUL(ELEMENTSIZE_OF(WEIGHT), DIM_OF(WEIGHT, 0), DIM_OF(WEIGHT, 1), DIM_OF(WEIGHT, 2), DIM_OF(WEIGHT, 3))
+
+// GPTQ
 DEF_PACKAGE_OPTIMIZATION(
   EARLY,
   Op("TMANLinear", "l", "qweight", "scales", "group_size", "bits", "symmetric"),
-  GT(DIM_OF("qweight", 2), 1),
+  AND(GT(DIM_OF("qweight", 2), 1), GT(SIZE_OF("scales"), 128)),
   AUTOSPLIT(3, "I", DIV(DIM_OF("*", 3), DIM_OF("qweight", 2)),
     Op(
       "TMANLinear", "l",
@@ -80,6 +83,19 @@ DEF_PACKAGE_OPTIMIZATION(
         AUTOSPLIT_SHAPEFN_APPLY(simpledim_chunk1_4d_split_start, "I", "scales", 2),
         AUTOSPLIT_SHAPEFN_APPLY(simpledim_chunk1_4d_split_size, "I", "scales", 2)),
       "group_size", "bits", "symmetric")))
+
+// BitNet: weight scale shouldn't be split
+DEF_PACKAGE_OPTIMIZATION(
+  EARLY + 1,
+  Op("TMANLinear", "l", "qweight", "scales", "group_size", "bits", "symmetric"),
+  AND(GT(DIM_OF("qweight", 2), 1), LE(SIZE_OF("scales"), 128)),
+  AUTOSPLIT(3, "I", DIV(DIM_OF("*", 3), DIM_OF("qweight", 2)),
+    Op(
+      "TMANLinear", "l",
+      AUTOSPLIT_SLICE("qweight",
+        AUTOSPLIT_SHAPEFN_APPLY(simpledim_chunk1_4d_split_start, "I", "qweight", 2),
+        AUTOSPLIT_SHAPEFN_APPLY(simpledim_chunk1_4d_split_size, "I", "qweight", 2)),
+      "scales", "group_size", "bits", "symmetric")))
 
 DEF_PACKAGE_PARAM_ORDER("TMANLinear",
                         "group_size",
@@ -145,9 +161,9 @@ GraphStatus tmanlinearImpl(TensorType& c,
   {
     hvx_tbl<LType, XType, CType, ACT_GROUP_SIZE, 64, true, 4, TILE_K, LUT_G, true>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
   }
-  else if (!zero_point && bits == 2 && group_size == -1)  // bitnet
+  else if (!zero_point && bits == 2 && group_size == 0)  // bitnet
   {
-    hvx_tbl<LType, XType, CType, -1, -1, false, 4, TILE_K, LUT_G, true>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
+    hvx_tbl<LType, XType, CType, -1, 0, false, 2, TILE_K, LUT_G, true>(gemm_m, gemm_k, gemm_n, l_ptr, ls_ptr, lb_ptr, w_ptr, s_ptr, c_ptr);
   }
   else
   {

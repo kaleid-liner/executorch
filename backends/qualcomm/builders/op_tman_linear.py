@@ -10,7 +10,7 @@ import executorch.backends.qualcomm.python.PyQnnWrapperAdaptor as PyQnnWrapper
 
 import numpy as np
 import torch
-from executorch.backends.qualcomm.utils.constants import QCOM_DATA, QCOM_QUANT_ATTRS
+from executorch.backends.qualcomm.utils.constants import QCOM_DATA
 from executorch.backends.qualcomm.builders.utils import unpack_gptqv2, hvx_preprocess_weights, unpack_weights
 import logging
 
@@ -130,20 +130,16 @@ class TMANLinear(NodeVisitor):
             qweight_tensor = get_parameter(qweight_node, self.edge_program)
             scales_node = node.args[2]
             scales_tensor = get_parameter(scales_node, self.edge_program)
-            group_size = -1
+            group_size = 0
             bits = 2
             symmetric = True
 
             qweight_repacked = (unpack_weights(qweight_tensor.detach(), dtype=torch.int8) + 2).to(torch.uint8).numpy()
-            import pdb; pdb.set_trace()
             scales_repacked = scales_tensor.detach().numpy()
             zeros_repacked = None
         else:
             raise NotImplementedError(f"Unsupported node target: {node.target.__name__}")
 
-        # Is this needed?
-        # QNN constraint, topk output_0 requires having the same quant config as input
-        node.meta[QCOM_QUANT_ATTRS] = input_node.meta.get(QCOM_QUANT_ATTRS)
         output_tensor = self.get_tensor(node, node)
         output_tensor_wrapper = self.define_tensor(
             node,
@@ -157,11 +153,11 @@ class TMANLinear(NodeVisitor):
         m = output_tensor.shape[-1]
 
         zeros_repacked = zeros_repacked if not symmetric else None
-        total_size = qweight_repacked.nbytes + (scales_repacked.size + (zeros_repacked.size if zeros_repacked is not None else 0)) * np.dtype("float16").itemsize
         vec_p = 128
+        total_size = qweight_repacked.nbytes + max((scales_repacked.size + (zeros_repacked.size if zeros_repacked is not None else 0)) * np.dtype("float16").itemsize, 128)
         tile_p = _decide_tile_size(m*bits, total_size, divider=bits*vec_p)
         qweight_repacked, scales_repacked = hvx_preprocess_weights(qweight_repacked, scales_repacked, zeros_repacked, bits, tile_p=tile_p, vec_p=vec_p)
-        logger.info(f"TMANLinear: m={m}, k={k}, bits={bits}, tile_p={tile_p}, qweight({qweight_repacked.shape}))")
+        logger.info(f"TMANLinear: m={m}, k={k}, bits={bits}, tile_p={tile_p}, qweight({qweight_repacked.shape})")
 
         qweight_tensor_wrapper = self.define_tensor(
             qweight_node,

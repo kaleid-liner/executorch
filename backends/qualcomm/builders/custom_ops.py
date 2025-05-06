@@ -106,7 +106,7 @@ def tman_linear(
 
 
 @tman_linear.register_fake
-def _(
+def tman_linear_fake(
     x: torch.Tensor,
     qweight: torch.Tensor,
     scales: torch.Tensor,
@@ -147,7 +147,7 @@ def tman_bitnet_linear(
 
 
 @tman_bitnet_linear.register_fake
-def _(
+def tman_bitnet_linear_fake(
     x: torch.Tensor,
     weight: torch.Tensor,
     weight_scale: torch.Tensor,
