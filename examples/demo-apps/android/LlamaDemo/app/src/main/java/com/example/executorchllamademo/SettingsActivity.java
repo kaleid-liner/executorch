@@ -350,6 +350,18 @@ public class SettingsActivity extends AppCompatActivity {
       "https://huggingface.co/JY-W/test_model/resolve/main/kv_llama_qnn.pte?download=true",
       "https://huggingface.co/JY-W/test_model/resolve/main/kv_llama_qnn_quant_attrs.txt?download=true"
     ),
+    new ModelInfo(
+      "llama-3.1-8B-Instruct",
+      "https://huggingface.co/JY-W/test_model/resolve/main/llama_3_1_8b_bitdistiller_tokenizer.json?download=true",
+      "https://huggingface.co/JY-W/test_model/resolve/main/llama_3_1_8b_instruct_bitdistiller.pte?download=true",
+      "https://huggingface.co/JY-W/test_model/resolve/main/llama_3_1_8b_bitdistiller_quant_attrs.txt?download=true"
+    ),
+    new ModelInfo(
+      "llama-3.1-8B-Instruct-Baseline",
+      "https://huggingface.co/JY-W/test_model/resolve/main/llama_3_1_8b_tokenizer.json?download=true",
+      "https://huggingface.co/JY-W/test_model/resolve/main/llama_3_1_8b_baseline.pte?download=true",
+      "https://huggingface.co/JY-W/test_model/resolve/main/llama_3_1_8b_baseline_quant_attrs.txt?download=true"
+    )
   };
 
   private final String mOpPackageUrl = "https://huggingface.co/JY-W/test_model/resolve/main/libQnnTMANOpPackage.so?download=true";
@@ -382,7 +394,7 @@ public class SettingsActivity extends AppCompatActivity {
                     return;
                 }
 
-                int fileLength = connection.getContentLength();
+                long fileLength = connection.getContentLengthLong();
                 InputStream input = connection.getInputStream();
 
                 try (FileOutputStream output = new FileOutputStream(outputFile)) {
