@@ -517,9 +517,11 @@ Error Runner::generate(
   ET_CHECK_MSG(!prompt.empty(), "prompt cannot be null");
 
   int32_t seq_len = config.seq_len;
+  // The passed in seq_len could be too short. Use context_len_ for now
+  seq_len = context_len_;
   seq_len = (seq_len > 0 && seq_len <= context_len_) ? seq_len : context_len_;
   tokenizers::Result<std::vector<uint64_t>> encode_res =
-      tokenizer_->encode(prompt, n_bos_, 0);
+      tokenizer_->encode(prompt, 0, 0);  // set to 0 to avoid bos at the beginning
   ET_CHECK_TK_OK_OR_RETURN_ERROR(
       encode_res.error(), "failed to encode prompt %s", prompt.c_str());
 

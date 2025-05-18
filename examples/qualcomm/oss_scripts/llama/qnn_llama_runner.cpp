@@ -90,6 +90,8 @@ int main(int argc, char** argv) {
   buf.reserve(5 * FLAGS_seq_len); // assume each token is around 5 char
   std::ofstream fout(FLAGS_output_path.c_str());
   auto callback = [&](const std::string& piece) {
+    printf("%s", piece.c_str());
+    fflush(stdout);
     for (const char c : piece) {
       buf.push_back(c);
     }

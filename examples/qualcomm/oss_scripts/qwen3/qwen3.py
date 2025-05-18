@@ -1192,7 +1192,7 @@ def export_llama(args) -> None:
 def main():
     parser = _build_parser()
     args = parser.parse_args()
-    args.prompt = "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n".format(args.prompt)
+    args.prompt = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n".format(args.prompt)
     export_llama(args)
 
 
